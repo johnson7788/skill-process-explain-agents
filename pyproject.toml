@@ -1,0 +1,18 @@
+[project]
+name = "skill-process-explain-agents"
+version = "0.1.0"
+description = "ADK agent that provides user-friendly explanations for long-running skill processes"
+authors = [{ name = "ADK Samples" }]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "google-adk>=1.0.0,<2.0.0",
+    "python-dotenv>=1.0.0,<2.0.0",
+    "litellm>=1.0.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.22.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
