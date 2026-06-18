@@ -2,13 +2,13 @@
 Case 1: 具体问题 — SSE 流式问答 + 缓存验证
 
 测试场景：
-    发送一个具体的医学对比问题（耐赋康三期 vs 泰它西普三期 蛋白尿基线），
+    发送一个具体的方法对比问题（RAG vs 长上下文窗口），
     验证 SSE 流式响应的完整性、工具调用、回答质量，以及缓存命中行为。
 
 测试用例：
     1. test_sse_stream_structure        — SSE 事件流结构完整性
-    2. test_medical_search_triggered     — 医学检索工具被调用
-    3. test_answer_mentions_both_drugs   — 回答同时涵盖两种药物
+    2. test_arxiv_search_triggered       — 论文检索工具被调用
+    3. test_answer_mentions_both_methods — 回答同时涵盖两种方法
     4. test_cache_hit_on_repeat          — 相同问题命中缓存并返回一致结果
 
 运行方式：
@@ -25,11 +25,11 @@ from conftest import (
     get_tool_names,
 )
 
-# 测试问题：具体的医学对比研究问题
-QUESTION = "耐赋康三期研究目标人群蛋白尿基线和泰它西普三期的对比"
+# 测试问题：具体的方法对比研究问题
+QUESTION = "对比 RAG（检索增强生成）与长上下文窗口在知识密集型任务上的优劣"
 
 
-class TestSpecificMedicalQuestion:
+class TestSpecificResearchQuestion:
     """具体问题 SSE 流式问答测试套件。"""
 
     async def test_sse_stream_structure(self, client, test_user_id: str):
@@ -78,9 +78,9 @@ class TestSpecificMedicalQuestion:
         print(f"\n[SSE 结构] 共 {len(events)} 事件, "
               f"类型: {event_types}, 正文 {len(text)} 字符")
 
-    async def test_medical_search_triggered(self, client, test_user_id: str):
+    async def test_arxiv_search_triggered(self, client, test_user_id: str):
         """
-        验证 Agent 在处理医学对比问题时调用了检索工具：
+        验证 Agent 在处理方法对比问题时调用了检索工具：
         - 必须有 tool_step 事件
         - 至少调用了搜索相关工具（直接工具名 或 skill 执行包装）
         - 工具调用状态最终为 done（非 error）
@@ -101,10 +101,10 @@ class TestSpecificMedicalQuestion:
         print(f"\n[工具调用] 使用的工具: {tool_names}")
 
         # Agent 可能通过直接工具名或 skill 包装调用搜索
-        # 直接工具: medical_keyword_search, web_search
+        # 直接工具: arxiv_search, web_search
         # Skill 包装: run_skill_script, load_skill, load_skill_resource
         search_related_tools = {
-            "medical_keyword_search", "web_search",
+            "arxiv_search", "web_search",
             "run_skill_script", "load_skill", "load_skill_resource",
         }
         triggered = search_related_tools & set(tool_names)
@@ -120,9 +120,9 @@ class TestSpecificMedicalQuestion:
                     f"工具 {call.get('tool_name')} 状态异常: {status}"
                 )
 
-    async def test_answer_mentions_both_drugs(self, client, test_user_id: str):
+    async def test_answer_mentions_both_methods(self, client, test_user_id: str):
         """
-        验证回答同时涵盖了两种药物（耐赋康 和 泰它西普）以及蛋白尿相关内容。
+        验证回答同时涵盖了两种方法（RAG 和 长上下文）以及相关概念。
         """
         resp = await client.get(
             "/chat/stream",
@@ -132,28 +132,28 @@ class TestSpecificMedicalQuestion:
         text = extract_full_text(events)
 
         # 检查关键词覆盖
-        drug_a_keywords = ["耐赋康", "Nefecon", "布地奈德"]
-        drug_b_keywords = ["泰它西普", "Telitacicept", "TACI"]
-        topic_keywords = ["蛋白尿", "proteinuria", "尿蛋白"]
+        method_a_keywords = ["RAG", "检索增强", "retrieval", "检索"]
+        method_b_keywords = ["长上下文", "long context", "上下文窗口", "context window"]
+        topic_keywords = ["知识", "knowledge", "任务"]
 
-        has_drug_a = any(kw in text for kw in drug_a_keywords)
-        has_drug_b = any(kw in text for kw in drug_b_keywords)
+        has_method_a = any(kw in text for kw in method_a_keywords)
+        has_method_b = any(kw in text for kw in method_b_keywords)
         has_topic = any(kw in text for kw in topic_keywords)
 
-        assert has_drug_a, (
-            f"回答未提及耐赋康相关关键词。\n"
+        assert has_method_a, (
+            f"回答未提及 RAG 相关关键词。\n"
             f"回答摘要: {text[:500]}"
         )
-        assert has_drug_b, (
-            f"回答未提及泰它西普相关关键词。\n"
+        assert has_method_b, (
+            f"回答未提及长上下文相关关键词。\n"
             f"回答摘要: {text[:500]}"
         )
         assert has_topic, (
-            f"回答未提及蛋白尿相关内容。\n"
+            f"回答未提及知识密集型任务相关内容。\n"
             f"回答摘要: {text[:500]}"
         )
 
-        print(f"\n[回答质量] 包含: 耐赋康✓ 泰它西普✓ 蛋白尿✓")
+        print(f"\n[回答质量] 包含: RAG✓ 长上下文✓ 知识任务✓")
 
     async def test_cache_hit_on_repeat(self, client, test_user_id: str):
         """

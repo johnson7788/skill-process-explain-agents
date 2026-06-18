@@ -28,7 +28,7 @@ RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r re
 # ---- Application code ----
 COPY server.py .
 COPY agent.md .
-COPY medical_skills/ ./medical_skills/
+COPY skills/ ./skills/
 
 EXPOSE 8046
 

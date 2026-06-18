@@ -577,7 +577,7 @@ export default function OptimizePage() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="描述优化方向，例如：「根据以上日志，优化 medical-keyword-search 的关键词提取策略」（Enter 发送）"
+              placeholder="描述优化方向，例如：「根据以上日志，优化 arxiv-paper-search 的关键词提取策略」（Enter 发送）"
               rows={3}
               className="flex-1 resize-none rounded-xl border border-gray-200 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
               disabled={streaming}

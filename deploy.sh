@@ -8,7 +8,7 @@ WORK_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE=".env"
 BRANCH_NAME="master"
 COMPOSE_FILE="docker-compose.yml"
-CONTAINER_NAME="agno-innovation-agent"
+CONTAINER_NAME="arxiv-research-agent"
 PORT="${PORT:-8046}"
 
 # ANSI color
@@ -52,7 +52,6 @@ check_env() {
     echo "  DEEPSEEK_API_KEY=sk-your-api-key"
     echo "  DEEPSEEK_BASE_URL=https://api.deepseek.com/v1"
     echo "  DEEPSEEK_MODEL=deepseek-v4-pro"
-    echo "  INFOX_MED_TOKEN=your-token"
     echo "  PORT=8000"
     exit 1
   fi

@@ -35,8 +35,8 @@ def server_url() -> str:
 
 @pytest.fixture(scope="session")
 def ppt_file_path() -> Path:
-    """测试用 PPT 文件路径（Etrasimod.pptx）。"""
-    p = Path(__file__).parent / "Etrasimod.pptx"
+    """测试用 PPT 文件路径（LongContextLLM.pptx）。"""
+    p = Path(__file__).parent / "LongContextLLM.pptx"
     assert p.exists(), f"PPT 测试文件不存在: {p}"
     return p
 

@@ -44,7 +44,7 @@ class SearchWithDiagnosticsTests(unittest.TestCase):
 
         with patch.object(MODULE.requests, "get", return_value=FakeResponse(payload)) as mock_get:
             results, diagnostics = MODULE.search_with_diagnostics(
-                query="医学指南",
+                query="machine learning",
                 max_attempts=3,
                 retry_base_delay=0,
             )
@@ -89,7 +89,7 @@ class SearchWithDiagnosticsTests(unittest.TestCase):
             return_value=0,
         ):
             results, diagnostics = MODULE.search_with_diagnostics(
-                query="医学指南",
+                query="machine learning",
                 max_attempts=3,
                 retry_base_delay=0.01,
             )
@@ -115,7 +115,7 @@ class SearchWithDiagnosticsTests(unittest.TestCase):
             return_value=None,
         ) as mock_sleep:
             results, diagnostics = MODULE.search_with_diagnostics(
-                query="医学指南",
+                query="machine learning",
                 max_attempts=3,
                 retry_base_delay=0.01,
             )
@@ -135,7 +135,7 @@ class SearchWithDiagnosticsTests(unittest.TestCase):
         ) as mock_sleep, patch.object(MODULE.random, "uniform", return_value=0):
             with self.assertRaises(MODULE.requests.RequestException):
                 MODULE.search_with_diagnostics(
-                    query="医学指南",
+                    query="machine learning",
                     max_attempts=3,
                     retry_base_delay=0.01,
                 )

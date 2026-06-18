@@ -1,7 +1,7 @@
 [project]
 name = "manage-backend"
 version = "0.1.0"
-description = "云顶新耀 智能体管理后端 — Agent 配置优化、Skill 管理、日志分析"
+description = "智能体管理后端 — Agent 配置优化、Skill 管理、日志分析"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.100.0",

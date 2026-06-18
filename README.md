@@ -1,6 +1,6 @@
-# 云顶新耀 · 医学研究智能体
+# 学术论文研究智能体
 
-基于 Google ADK + DeepSeek 构建的医学研究智能体，支持**文献检索、网页搜索、文件上传问答**，并通过**旁路解说架构**将 Agent 的工具调用与思考过程翻译为通俗易懂的中文卡片，让非技术用户也能理解 AI 的分析过程。
+基于 Google ADK + DeepSeek 构建的学术论文研究智能体，支持**arXiv 论文检索、网页搜索、文件上传问答**，并通过**旁路解说架构**将 Agent 的工具调用与思考过程翻译为通俗易懂的中文卡片，让非技术用户也能理解 AI 的分析过程。
 
 ---
 
@@ -8,7 +8,7 @@
 
 | 功能 | 说明 |
 |------|------|
-| **医学文献检索** | 接入 InfoX-Med API，支持中文指南、英文指南、系统评价/Meta 分析、RCT 四大类并行检索 |
+| **arXiv 论文检索** | 接入 arXiv 公开 API，支持按相关性/最新提交并行检索、按分类/作者检索、自由检索表达式 |
 | **网页搜索** | 自建 SearXNG 实例，支持通用/新闻/图片/视频搜索，自动重试与诊断 |
 | **文件上传问答** | 支持 PDF、PPTX、PPT、TXT 文件上传，自动提取内容并带位置标记（`[第X页]`、`[幻灯片X]`）注入 LLM 上下文 |
 | **旁路解说** | 工具调用和思考过程被翻译为友好的中文卡片，实时推送给前端 |
@@ -21,90 +21,63 @@
 
 ## 效果演示
 
-> 以下为实际查询的真实返回结果，展示智能体的完整工作流程。
+> 以下为示例查询，展示智能体的完整工作流程。
 
-**查询**：蛋白尿在 IgA 肾病中的临床意义及治疗进展
+**查询**：对比 RAG 与长上下文窗口在知识密集型任务上的优劣
 
 ### 思考过程（旁路解说翻译后）
 
 ```
 🧠 根据研究问题制定检索策略
-🧠 分析主要疗效终点和研究结局
+🧠 分析主要实验结果与评测指标
 ```
 
-### 工具调用过程（12 张解说卡片）
+### 工具调用过程（解说卡片）
 
 ```
 [1]  📖 加载技能指导 …
-       读取医学检索技能的详细分步指导
+       读取论文检索技能的详细分步指导
 
 [2]  📖 加载技能指导 - 完成 ✓
        返回结构化数据，包含 3 个字段: skill_name, instructions, frontmatter
 
-[3]  📖 加载技能指导 …
-       读取医学检索技能的详细分步指导
-
-[4]  📖 加载技能指导 - 完成 ✓
-       返回结构化数据，包含 3 个字段: skill_name, instructions, frontmatter
-
-[5]  🔧 执行检索脚本 …
+[3]  🔧 执行检索脚本 …
        正在执行 run_skill_script
 
-[6]  🔧 执行检索脚本 …
+[4]  🔧 执行检索脚本 …
        正在执行 run_skill_script
 
-[7]  🔧 执行检索脚本 …
-       正在执行 run_skill_script
+[5]  🔧 执行检索脚本 - 完成 ✓
+       脚本执行成功，stdout 输出 28,114 字符
 
-[8]  🔧 执行检索脚本 …
-       正在执行 run_skill_script
-
-[9]  🔧 执行检索脚本 - 完成 ✓
-       脚本执行成功，stdout 输出 32,911 字符
-
-[10] 🔧 执行检索脚本 - 完成 ✓
-       脚本执行成功，stdout 输出 125,529 字符
-
-[11] 🔧 执行检索脚本 - 完成 ✓
-       脚本执行成功，stdout 输出 66,307 字符
-
-[12] 🔧 执行检索脚本 - 完成 ✓
-       脚本执行成功，stdout 输出 5,896 字符
+[6]  🔧 执行检索脚本 - 完成 ✓
+       脚本执行成功，stdout 输出 31,902 字符
 ```
 
 ### 检索策略（智能体自动制定）
 
 | 检索维度 | 工具 | 检索内容 |
 |----------|------|----------|
-| 综合文献 | medical-keyword-search (all) | IgA 肾病 + 蛋白尿临床意义 |
-| RCT 文献 | medical-keyword-search (rct) | IgA 肾病蛋白尿治疗临床试验 |
-| 系统评价 | medical-keyword-search (systematic-meta) | IgA 肾病蛋白尿 Meta 分析 |
-| 最新进展 | searxng (news) | IgA 肾病蛋白尿新药进展 |
+| 综合论文 | arxiv-paper-search (all) | retrieval augmented generation + long context |
+| 最新进展 | arxiv-paper-search (recent) | long context language model |
+| 代码/解读 | searxng (general) | RAG vs long context window benchmark |
 
 ### 回答正文（节选）
 
-> #### 蛋白尿的预后预测价值
+> #### 两种范式的核心差异
 >
-> 蛋白尿是 IgA 肾病中最重要、研究最充分的风险分层指标之一。2026 年发表的一项系统评价纳入了 21 项研究（共 13,006 例 IgAN 患者），结果一致表明：**蛋白尿水平越低，肾脏结局越好**，且明确证实蛋白尿 <0.5 g/d 的患者肾脏预后显著优于更高蛋白尿阈值的患者。
+> **RAG（检索增强生成）** 在推理时从外部知识库检索相关片段拼接到提示中，知识可随时更新、单次上下文成本低；**长上下文窗口** 则将全部材料直接放入模型上下文，省去检索环节、保留完整篇章结构 [1][2]。
 >
-> #### KDIGO 2025 指南的里程碑式更新
+> #### 在知识密集型任务上的对比
 >
-> | 关键更新 | KDIGO 2021 | KDIGO 2025 |
-> |----------|------------|------------|
-> | 蛋白尿控制目标 | <1.0 g/d | **<0.5 g/d（理想 <0.3 g/d）** |
-> | 治疗框架 | 单一维度 | **双通路：①抑制致病性 IgA 产生 + ②管理肾单位丢失后果** |
-> | 疾病修饰治疗 | — | Nefecon、减量全身糖皮质激素、中国患者可用 MMF |
->
-> #### 关键 III 期临床试验一览
->
-> | 药物 | 机制 | 试验名称 | 期刊 / IF | 蛋白尿降低 vs 安慰剂 |
-> |------|------|----------|-----------|---------------------|
-> | **Nefecon** | 肠道黏膜免疫调节 | NefIgArd | Lancet / 88.5 | 9 个月治疗后持续降低 |
-> | **Sparsentan** | 双重内皮素/血管紧张素受体拮抗剂 | PROTECT | Lancet / 88.5 | -49.8% vs -15.1%（36 周） |
-> | **Atrasentan** | 选择性 ETA 受体拮抗剂 | ALIGN | NEJM / 78.5 | **-38.1% vs -3.1%（36 周）** |
-> | **Iptacopan** | 补体 B 因子抑制剂 | APPLAUSE-IgAN | NEJM / 78.5 | 9 个月 UPCR 降低 **38.3%** |
+> | 维度 | RAG | 长上下文窗口 |
+> |------|-----|-------------|
+> | 知识更新 | 实时，无需重训 | 受窗口与训练数据限制 |
+> | 推理成本 | 低（只注入相关片段） | 高（随长度平方增长） |
+> | 长程依赖 | 受检索召回影响 | 完整保留篇章结构 |
+> | 典型失败模式 | 检索召回不全 | lost in the middle |
 
-**流结束统计**：正文 12,239 字符 · 2 个工具步骤（含 8 次子调用）· 12 张解说卡片
+**流结束统计**：正文约 6,000 字符 · 2 个工具步骤 · 6 张解说卡片
 
 ---
 
@@ -116,7 +89,7 @@
     ▼
 ┌──────────────────────────────────────────────────────┐
 │                  主 Agent (DeepSeek)                   │
-│     （医学文献检索、网页搜索、文件分析、深度思考）          │
+│     （arXiv 论文检索、网页搜索、文件分析、深度思考）          │
 └──────────┬──────────────┬──────────────┬─────────────┘
            │              │              │
      ┌─────▼─────┐  ┌────▼─────┐  ┌─────▼─────┐
@@ -156,7 +129,7 @@
 ## 项目结构
 
 ```
-agno_medical_science/
+arxiv-research-agent/
 ├── .env                          # 环境变量（API Key、端口等）
 ├── Dockerfile                    # 生产镜像（Python 3.12 + Node 20 + Gunicorn）
 ├── docker-compose.yml            # 容器编排（2 CPU、2G RAM）
@@ -173,7 +146,7 @@ agno_medical_science/
 │   │   ├── narrator.py           # 旁路解说模块（工具标签、思考翻译）
 │   │   ├── file_reader.py        # PDF/PPTX/PPT/TXT 文件提取（带位置标记）
 │   │   └── skills/
-│   │       ├── medical-keyword-search/   # InfoX-Med 医学文献检索
+│   │       ├── arxiv-paper-search/       # arXiv 学术论文检索
 │   │       └── searxng/                  # SearXNG 网页搜索
 │   ├── cache/                    # SSE 响应缓存（JSON 文件）
 │   ├── logs/                     # 会话日志（JSONL）
@@ -206,7 +179,7 @@ agno_medical_science/
 │           └── OptimizePage.tsx  # LLM 驱动的智能优化建议
 │
 ├── test/                         # 集成测试（pytest + httpx）
-│   ├── test_specific_question.py # 医学问答 + 缓存测试
+│   ├── test_specific_question.py # 论文问答 + 缓存测试
 │   └── test_ppt_qa.py            # PPT 上传 + 幻灯片引用问答测试
 │
 └── docs/                         # 设计文档
@@ -266,7 +239,7 @@ docker compose up --build -d    # 容器端口 8046
 ```bash
 cd test
 pytest test_ppt_qa.py -v                    # PPT 上传 + 问答测试
-pytest test_specific_question.py -v         # 医学问答 + 缓存测试
+pytest test_specific_question.py -v         # 论文问答 + 缓存测试
 TEST_SERVER_URL=http://host:port pytest . -v  # 对远程服务器测试
 ```
 
@@ -304,11 +277,11 @@ TEST_SERVER_URL=http://host:port pytest . -v  # 对远程服务器测试
 ```json
 {"type": "text", "text": "根据文献检索的结果..."}
 
-{"type": "thought", "raw": "I need to search for clinical trials...", "narrated": "正在检索相关临床试验数据"}
+{"type": "thought", "raw": "I need to search for recent papers...", "narrated": "正在检索相关方向的最新论文"}
 
-{"type": "tool_step", "step_id": "s1", "summary": "🔬 检索医学文献", "calls": [{"call_id": "c1", "tool": "medical_keyword_search", "status": "running"}]}
+{"type": "tool_step", "step_id": "s1", "summary": "🔬 检索学术论文", "calls": [{"call_id": "c1", "tool": "arxiv_search", "status": "running"}]}
 
-{"type": "narrator_card", "card": {"phase": "before_tool", "tool": "medical_keyword_search", "icon": "🔬", "label": "检索医学文献", "detail": "在 InfoX-Med 数据库中检索相关文献", "status": "running"}, "card_index": 0}
+{"type": "narrator_card", "card": {"phase": "before_tool", "tool": "arxiv_search", "icon": "🔬", "label": "检索学术论文", "detail": "通过 arXiv API 检索相关方向的论文", "status": "running"}, "card_index": 0}
 
 {"type": "done", "text_len": 2340, "thought_count": 3, "step_count": 2, "card_count": 7}
 ```
@@ -412,8 +385,7 @@ cd manage_frontend && npm install && npm run dev               # 管理前端（
 | `DEEPSEEK_BASE_URL` | API 基础地址 | `https://api.deepseek.com/v1` |
 | `PORT` | 后端端口 | `8585`（开发）/ `8046`（Docker） |
 | `HOST` | 绑定地址 | `0.0.0.0` |
-| `INFOX_MED_TOKEN` | InfoX-Med 文献检索 Token | （内置默认值） |
-| `SEARXNG_BASE_URL` | SearXNG 实例地址 | 内置默认值 |
+| `SEARXNG_BASE_URL` | SearXNG 实例地址（需自部署） | `http://localhost:8080/search` |
 | `SEARXNG_MAX_ATTEMPTS` | SearXNG 重试次数 | `3` |
 | `SEARXNG_REQUEST_TIMEOUT` | SearXNG 请求超时（秒） | `30` |
 | `SSE_CACHE_MAX_SIZE` | 最大缓存条数 | `500` |

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-云顶新耀 医学研究智能体 — FastAPI 服务端（协议 v2）
+学术论文研究智能体 — FastAPI 服务端（协议 v2）
 
 SSE 事件类型（GET /chat/stream）：
 
@@ -63,9 +63,9 @@ from app.file_reader import read_file
 from app.narrator import _explain_thinking, get_narrator_cards
 
 # ---------------------------------------------------------------------------
-APP_NAME = "yundingxinyao-medical-research"
+APP_NAME = "arxiv-research-agent"
 
-app = FastAPI(title="云顶新耀 医学研究智能体")
+app = FastAPI(title="学术论文研究智能体")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -347,8 +347,7 @@ def _extract_tool_info(event) -> dict | None:
 def _friendly_tool_name(raw: str) -> str:
     """把内部工具名转换为用户友好的中文显示名。"""
     mapping = {
-        "medical_keyword_search": "医学关键词检索",
-        "europe_pmc_fetch": "获取 Europe PMC 全文",
+        "arxiv_search": "arXiv 论文检索",
         "write_file": "写入文件",
         "read_file": "读取文件",
         "list_files": "列出文件",

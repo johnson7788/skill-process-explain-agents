@@ -4,7 +4,7 @@
 测试场景：
     1. test_stream_structure_basic         — SSE 流结构完整性（思考/文本/done 事件）
     2. test_optimize_with_specific_log     — 指定日志文件名，验证 Agent 读日志产出分析
-    3. test_optimize_medical_keyword_skill — 针对 medical-keyword-search 优化，结合多条日志
+    3. test_optimize_arxiv_paper_skill     — 针对 arxiv-paper-search 优化，结合多条日志
     4. test_optimize_agent_instruction     — 根据日志优化 agent instruction
 
 运行方式：
@@ -140,14 +140,14 @@ class TestOptimizeStream:
         message = (
             f"请读取日志文件 backend/logs/{LOG_COMPLEX}，"
             "分析这次会话的工具调用情况（该会话有多次工具调用、耗时约 200 秒），"
-            "找出造成耗时长的原因，并对 medical-keyword-search 或 searxng skill 提出具体优化建议。"
+            "找出造成耗时长的原因，并对 arxiv-paper-search 或 searxng skill 提出具体优化建议。"
             "只需要分析和建议，不需要实际修改文件。"
         )
         resp = await manage_client.get(
             "/chat/optimize_stream",
             params={
                 "message": message,
-                "skills": "medical-keyword-search,searxng",
+                "skills": "arxiv-paper-search,searxng",
                 "user_id": manage_user_id,
             },
         )
@@ -172,9 +172,9 @@ class TestOptimizeStream:
             f"回答未体现日志分析内容，命中关键词: {matched}\n回答: {text[:400]}"
         )
 
-    async def test_optimize_medical_keyword_skill(self, manage_client, manage_user_id):
+    async def test_optimize_arxiv_paper_skill(self, manage_client, manage_user_id):
         """
-        针对 medical-keyword-search skill 的优化：
+        针对 arxiv-paper-search skill 的优化：
         - 传入 skills 参数，让 Agent 自动关联相关日志
         - 验证 Agent 读取了 skill 文件（tool_step 中有文件读取调用）
         - 验证输出包含对该 skill 的具体分析
@@ -186,7 +186,7 @@ class TestOptimizeStream:
                 log_info += f"- backend/logs/{fname}\n"
 
         message = (
-            "请分析以下日志文件，重点关注 medical-keyword-search 这个 skill 的使用情况：\n"
+            "请分析以下日志文件，重点关注 arxiv-paper-search 这个 skill 的使用情况：\n"
             f"{log_info}"
             "从日志中找出该 skill 在哪些场景下表现不佳（例如搜索关键词不准、结果不相关、"
             "需要多次重试等），给出 SKILL.md 中 instruction 部分的改进建议。"
@@ -196,7 +196,7 @@ class TestOptimizeStream:
             "/chat/optimize_stream",
             params={
                 "message": message,
-                "skills": "medical-keyword-search",
+                "skills": "arxiv-paper-search",
                 "user_id": manage_user_id,
             },
         )
@@ -215,7 +215,7 @@ class TestOptimizeStream:
     async def test_optimize_agent_instruction(self, manage_client, manage_user_id):
         """
         根据多条日志优化 agent instruction：
-        - 日志中多次出现相同问题类型（医学药物对比）
+        - 日志中多次出现相同问题类型（学术论文方法对比）
         - 验证 Agent 读取了 agent.py 的当前 instruction
         - 验证输出包含对 instruction 的具体改进方向
         """
@@ -228,7 +228,7 @@ class TestOptimizeStream:
             "请读取 backend/app/agent.py 的当前 instruction，"
             "再结合以下日志分析用户的实际使用模式：\n"
             f"{log_list}\n"
-            "日志显示用户主要在做医学临床研究的药物对比，多次触发搜索工具。"
+            "日志显示用户主要在做学术论文的方法对比，多次触发搜索工具。"
             "请分析当前 instruction 是否有不足之处，"
             "给出 1-3 条具体的修改建议（描述应修改的内容，不需要实际修改文件）。"
         )

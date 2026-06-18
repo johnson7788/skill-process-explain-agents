@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-# 项目根目录（agno_medical_science/）
+# 项目根目录
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 
 # 主 backend 目录

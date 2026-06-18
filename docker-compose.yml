@@ -1,7 +1,7 @@
 services:
-  medical-innovation-agent:
+  arxiv-research-agent:
     build: .
-    container_name: medical-innovation-agent
+    container_name: arxiv-research-agent
     restart: unless-stopped
     ports:
       - "${PORT:-8046}:8046"
@@ -11,7 +11,6 @@ services:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?err}
       - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:?err}
       - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:?err}
-      - INFOX_MED_TOKEN=${INFOX_MED_TOKEN:-}
       - WORKERS=${WORKERS:-4}
       - TIMEOUT=${TIMEOUT:-600}
       - WORKER_CONNECTIONS=${WORKER_CONNECTIONS:-1000}

@@ -1,7 +1,7 @@
 [project]
 name = "skill-process-explain-agents"
 version = "0.1.0"
-description = "云顶新耀 医学研究智能体 — 医学文献检索、临床研究分析、药物对比研究"
+description = "学术论文研究智能体 — arXiv 论文检索、研究综述、方向追踪"
 requires-python = ">=3.10"
 dependencies = [
     "google-adk>=1.0.0,<2.0.0",

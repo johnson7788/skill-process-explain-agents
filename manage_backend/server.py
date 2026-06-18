@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-云顶新耀 智能体管理后端 — FastAPI 服务
+智能体管理后端 — FastAPI 服务
 
 端口: 8686（开发）
 
@@ -57,9 +57,9 @@ from app.log_analyzer import list_logs, get_log, analyze_logs, get_logs_by_skill
 # App + ADK runner
 # ---------------------------------------------------------------------------
 
-APP_NAME = "yundingxinyao-optimize"
+APP_NAME = "agent-manage-optimize"
 
-app = FastAPI(title="云顶新耀 智能体管理后端")
+app = FastAPI(title="智能体管理后端")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -392,7 +392,7 @@ def status():
 # ===========================================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="云顶新耀 管理后端")
+    parser = argparse.ArgumentParser(description="智能体管理后端")
     parser.add_argument("--port", type=int, default=8686)
     parser.add_argument("--host", type=str, default="0.0.0.0")
     args = parser.parse_args()

@@ -76,8 +76,7 @@ const TYPING_INTERVAL = 12;
 
 function getToolIcon(toolName: string): ReactNode {
   const map: Record<string, React.ReactNode> = {
-    medical_keyword_search: <Search className="w-4 h-4" />,
-    europe_pmc_fetch: <FileText className="w-4 h-4" />,
+    arxiv_search: <Search className="w-4 h-4" />,
     write_file: <FileText className="w-4 h-4" />,
     read_file: <FileText className="w-4 h-4" />,
     execute_command: <Terminal className="w-4 h-4" />,
@@ -94,11 +93,8 @@ type ExampleQuestion = {
 };
 
 const EXAMPLE_QUESTIONS: ExampleQuestion[] = [
-  { question: '耐赋康三期研究目标人群蛋白尿基线和泰它西普三期的对比' },
-  {
-    question: '根据上传的PPT，总结Etrasimod的主要临床研究设计和关键疗效数据',
-    demoFile: '/demo/Etrasimod.pptx',
-  },
+  { question: '对比 RAG 与长上下文窗口在知识密集型任务上的优劣' },
+  { question: '追踪 Mixture-of-Experts 大模型的最新进展' },
 ];
 
 // ─── 子组件 ──────────────────────────────────────────────────────────────────
@@ -106,9 +102,9 @@ const EXAMPLE_QUESTIONS: ExampleQuestion[] = [
 const Header = () => (
   <header className="flex items-center gap-2 px-4 py-3 border-b border-slate-800 text-sm font-medium text-slate-300">
     <Bot className="w-5 h-5 text-blue-400" />
-    <span className="font-semibold text-slate-200">云顶新耀</span>
+    <span className="font-semibold text-slate-200">arXiv</span>
     <ChevronRight className="w-4 h-4 text-slate-500" />
-    <span className="text-slate-400">医学研究智能体</span>
+    <span className="text-slate-400">学术论文研究智能体</span>
   </header>
 );
 
@@ -866,9 +862,9 @@ export default function App() {
         {messages.length === 0 && !isStreaming && (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
             <Bot className="w-12 h-12 text-blue-400/50 mb-4" />
-            <h2 className="text-xl font-semibold text-slate-300 mb-2">云顶新耀 医学研究智能体</h2>
+            <h2 className="text-xl font-semibold text-slate-300 mb-2">学术论文研究智能体</h2>
             <p className="text-slate-500 text-sm max-w-md mb-8">
-              医学文献检索 · 临床研究分析 · 药物对比研究
+              arXiv 论文检索 · 研究综述 · 方向追踪
             </p>
             <div className="flex flex-wrap justify-center gap-2 max-w-2xl">
               {EXAMPLE_QUESTIONS.map((ex, i) => (
@@ -992,7 +988,7 @@ export default function App() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={isStreaming}
-            placeholder={isStreaming ? 'AI 正在思考...' : '输入你的医学问题...'}
+            placeholder={isStreaming ? 'AI 正在思考...' : '输入你的研究问题...'}
             className="flex-1 bg-transparent text-[15px] text-slate-200 placeholder:text-slate-500 resize-none outline-none py-3 px-3 max-h-32 min-h-[44px] disabled:opacity-50"
           />
           {isStreaming ? (

@@ -17,7 +17,7 @@ export default function Layout() {
             <Activity className="w-6 h-6 text-indigo-600" />
             <div>
               <h1 className="text-base font-bold text-gray-900">智能体管理</h1>
-              <p className="text-xs text-gray-400">云顶新耀</p>
+              <p className="text-xs text-gray-400">arXiv 研究助手</p>
             </div>
           </div>
         </div>

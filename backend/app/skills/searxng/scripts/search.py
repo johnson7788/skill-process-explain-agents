@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 import requests
 
-DEFAULT_BASE_URL = "https://ai-searxng.infox-med.com/search"
+DEFAULT_BASE_URL = "http://localhost:8080/search"
 DEFAULT_REQUEST_TIMEOUT = 30.0
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_RETRY_BASE_DELAY = 1.0

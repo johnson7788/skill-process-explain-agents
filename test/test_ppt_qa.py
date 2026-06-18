@@ -2,7 +2,7 @@
 Case 2: PPT 文件问答 — 上传 PPT 后基于内容的 SSE 流式问答
 
 测试场景：
-    上传 Etrasimod.pptx 文件，然后针对其内容提问，验证：
+    上传 LongContextLLM.pptx 文件，然后针对其内容提问，验证：
     - 文件上传成功并被服务器正确存储
     - 文件内容被注入到发给 LLM 的消息中（带 [幻灯片X] 标记）
     - 回答引用了 PPT 内容（含幻灯片编号引用）
@@ -34,15 +34,17 @@ from conftest import (
 # 常量
 # ---------------------------------------------------------------------------
 
-# 针对 PPT 内容的提问（Etrasimod 是一种 S1P 受体调节剂，用于 IBD 治疗）
-PPT_QUESTION = "请根据上传的PPT，总结Etrasimod的主要临床研究设计和关键疗效数据"
+PPT_BASENAME = "LongContextLLM"
+
+# 针对 PPT 内容的提问（这份 PPT 是一份长上下文大模型研究综述）
+PPT_QUESTION = "请根据上传的PPT，总结长上下文大模型的关键方法和主要挑战"
 
 # PPT 幻灯片引用模式（LLM 应遵循 _build_message_with_files 中的引用规则）
 SLIDE_CITE_PATTERNS = [
-    "幻灯片",       # 中文标记
-    "Etrasimod",    # 文件名 / 药物名
-    "来源:",        # 引用格式
-    "来源：",       # 引用格式（全角冒号）
+    "幻灯片",              # 中文标记
+    PPT_BASENAME,         # 文件名
+    "来源:",              # 引用格式
+    "来源：",             # 引用格式（全角冒号）
 ]
 
 
@@ -68,8 +70,8 @@ class TestPPTFileQA:
         assert resp.status_code == 200, f"上传失败: HTTP {resp.status_code}"
         data = resp.json()
         assert data["success"] is True, f"上传返回 success=false: {data}"
-        assert "Etrasimod" in data["filename"], (
-            f"文件名不含 Etrasimod: {data['filename']}"
+        assert PPT_BASENAME in data["filename"], (
+            f"文件名不含 {PPT_BASENAME}: {data['filename']}"
         )
         assert data["size"] > 0, "文件大小为 0"
 
@@ -93,9 +95,9 @@ class TestPPTFileQA:
         files = data["files"]
         assert len(files) > 0, "文件列表为空"
 
-        ppt_files = [f for f in files if "Etrasimod" in f["name"]]
+        ppt_files = [f for f in files if PPT_BASENAME in f["name"]]
         assert len(ppt_files) > 0, (
-            f"文件列表中找不到 Etrasimod 相关文件: {[f['name'] for f in files]}"
+            f"文件列表中找不到 {PPT_BASENAME} 相关文件: {[f['name'] for f in files]}"
         )
 
         ppt = ppt_files[0]
@@ -151,8 +153,8 @@ class TestPPTFileQA:
         """
         核心测试 — 上传 PPT 后提问，验证：
         1. SSE 流正常完成（含 done 事件）
-        2. 回答内容涉及 Etrasimod 相关主题
-        3. 回答中包含幻灯片引用（如 "来源: Etrasimod.pptx 幻灯片X"）
+        2. 回答内容涉及长上下文大模型相关主题
+        3. 回答中包含幻灯片引用（如 "来源: LongContextLLM.pptx 幻灯片X"）
         4. 引用的幻灯片编号在有效范围内
         """
         await self._ensure_uploaded(client, ppt_file_path, test_user_id)
@@ -179,16 +181,16 @@ class TestPPTFileQA:
         text = extract_full_text(events)
         assert len(text) > 50, f"回答过短: {len(text)} 字符"
 
-        # ---- Etrasimod 内容 ----
-        etrasimod_keywords = [
-            "Etrasimod", "etrasimod", "S1P",
-            "奥扎莫德", "ozanimod", "IBD", "溃疡性结肠炎",
-            "溃疡", "结肠炎", "炎症性肠病",
-            "诱导", "维持", "缓解",
+        # ---- 主题内容 ----
+        topic_keywords = [
+            "长上下文", "long context", "上下文窗口",
+            "注意力", "attention", "稀疏",
+            "检索增强", "RAG", "位置编码",
+            "评测", "benchmark", "挑战",
         ]
-        matched = [kw for kw in etrasimod_keywords if kw in text]
+        matched = [kw for kw in topic_keywords if kw in text]
         assert len(matched) > 0, (
-            f"回答未涉及 Etrasimod 相关内容。\n"
+            f"回答未涉及长上下文大模型相关内容。\n"
             f"回答摘要: {text[:500]}"
         )
         print(f"[PPT QA] 匹配关键词: {matched}")
@@ -232,7 +234,7 @@ class TestPPTFileQA:
         check = await client.get("/uploads", params={"user_id": user_id})
         if check.status_code == 200:
             existing = check.json().get("files", [])
-            if any("Etrasimod" in f["name"] for f in existing):
+            if any(PPT_BASENAME in f["name"] for f in existing):
                 return  # 已上传
 
         with open(ppt_file_path, "rb") as f:

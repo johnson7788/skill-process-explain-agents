@@ -1,13 +1,13 @@
 # 项目文件结构与说明
 
-> **云顶新耀 医学研究智能体** — 基于 Google ADK + DeepSeek 构建的医学研究 AI Agent，采用前后端分离架构，通过旁路解说者（Narrator）架构将 Agent 的工具调用与思考过程翻译为普通用户可理解的可视化卡片。
+> **学术论文研究智能体** — 基于 Google ADK + DeepSeek 构建的学术论文研究 AI Agent，采用前后端分离架构，通过旁路解说者（Narrator）架构将 Agent 的工具调用与思考过程翻译为普通用户可理解的可视化卡片。
 
 ## 目录结构总览
 
 ```
-agno_medical_science/
+arxiv-research-agent/
 ├── 📄 README.md                    # 项目总文档，介绍核心架构（分层输出 / 旁路解说者）
-├── 📄 .env                         # 环境变量（DeepSeek API Key、InfoX-Med Token、端口等）
+├── 📄 .env                         # 环境变量（DeepSeek API Key、端口等）
 ├── 📄 .gitignore                   # Git 忽略规则（.env、__pycache__、node_modules、dist 等）
 ├── 📄 .dockerignore                # Docker 构建排除规则（.env、.git、node_modules 等）
 ├── 📄 Dockerfile                   # Docker 镜像构建（Python 3.12 + Node.js 20 + Gunicorn）
@@ -33,11 +33,11 @@ agno_medical_science/
 │       │
 │       └── 📂 skills/               # Agent 技能目录（ADK Skill 规范）
 │           │
-│           ├── 📂 medical-keyword-search/   # 技能 1：医学文献关键词搜索
+│           ├── 📂 arxiv-paper-search/       # 技能 1：arXiv 学术论文搜索
 │           │   ├── 📄 SKILL.md              # 技能说明文档（调用方式、参数、语法、示例）
 │           │   ├── 📄 _meta.json            # 技能元数据（slug、版本、发布信息）
 │           │   └── 📂 scripts/
-│           │       └── 📄 medical_search.py # InfoX-Med API 搜索脚本（4 类文献并行搜索、布尔检索）
+│           │       └── 📄 arxiv_search.py   # arXiv API 搜索脚本（相关性/最新并行检索、字段限定）
 │           │
 │           └── 📂 searxng/                  # 技能 2：互联网通用搜索
 │               ├── 📄 SKILL.md              # 技能说明文档（搜索类型、参数、环境变量）
@@ -70,7 +70,7 @@ agno_medical_science/
 ```
 
 ## 测试用例
-耐赋康三期研究目标人群蛋白尿基线和泰它西普三期的对比。
+对比 RAG（检索增强生成）与长上下文窗口两种方法在长文本任务上的优劣。
 有一些PPT和PDF，对其进行问答时，回答时引用ppt给出对应截图。本地上传文件回答时，对本地文件的参考和引用
 
 ## 核心文件详细说明
@@ -80,10 +80,10 @@ agno_medical_science/
 | 文件 | 作用 |
 |------|------|
 | `server.py` | FastAPI 服务入口。提供 `GET /chat/stream`（SSE 流式）和 `POST /chat`（非流式）两个聊天接口，以及 `POST /upload`、`GET /uploads`、`DELETE /uploads` 文件管理接口。SSE 协议 v2 定义了 `text`、`thought`、`tool_step`、`tool_call`、`narrator_card`、`done` 六种事件类型。 |
-| `app/agent.py` | 基于 Google ADK 定义根 Agent（`root_agent`），使用 DeepSeek 模型，挂载两个技能（medical-keyword-search、searxng），并注册 `before_tool_callback`、`after_tool_callback`、`after_model_callback` 三个旁路解说回调。 |
-| `app/narrator.py` | 旁路解说者模块。拦截 Agent 的工具调用和思考过程，通过模式匹配将技术操作翻译为中文解说卡片（如"🔬 检索医学文献"、"🌐 互联网搜索"）。卡片存储在 `session.state["_narrator_cards"]` 中。 |
+| `app/agent.py` | 基于 Google ADK 定义根 Agent（`root_agent`），使用 DeepSeek 模型，挂载两个技能（arxiv-paper-search、searxng），并注册 `before_tool_callback`、`after_tool_callback`、`after_model_callback` 三个旁路解说回调。 |
+| `app/narrator.py` | 旁路解说者模块。拦截 Agent 的工具调用和思考过程，通过模式匹配将技术操作翻译为中文解说卡片（如"🔬 检索学术论文"、"🌐 互联网搜索"）。卡片存储在 `session.state["_narrator_cards"]` 中。 |
 | `app/file_reader.py` | 统一文件读取模块。支持 PDF（逐页 + `[第X页]` 标记）、PPTX（逐幻灯片 + `[幻灯片X]` 标记）、旧版 PPT（OLE 二进制解析）、文本文件。所有输出带位置标记，方便 Agent 引用。 |
-| `app/skills/medical-keyword-search/scripts/medical_search.py` | InfoX-Med API 搜索脚本。支持 4 类文献并行搜索（中文指南、英文指南、系统评价/Meta 分析、RCT），以及自由检索表达式模式。内置查询构造器（`QueryBuilder`）、筛选构造器（`FilterBuilder`）、参数校验和结果清洗。 |
+| `app/skills/arxiv-paper-search/scripts/arxiv_search.py` | arXiv API 搜索脚本。支持按相关性与最新提交时间并行检索，提供 all/search/recent/category/author/free 多种模式，以及字段限定（ti/abs/au/cat 等）。内置查询构造、Atom XML 解析和结果清洗。 |
 | `app/skills/searxng/scripts/search.py` | SearXNG 搜索脚本。通过自部署 SearXNG 实例进行通用/新闻/图片/视频搜索，支持自动重试和诊断信息输出。 |
 | `client.py` | 命令行客户端，模拟前端行为。连接 SSE 流，按 `type` 字段分类渲染正文、思考过程、解说卡片，适合调试和演示。 |
 
@@ -141,5 +141,5 @@ agno_medical_science/
 
 | 技能 | 目录 | 用途 | 数据源 |
 |------|------|------|--------|
-| medical-keyword-search | `backend/app/skills/medical-keyword-search/` | 医学文献关键词精确搜索（指南、RCT、Meta 分析） | InfoX-Med API |
+| arxiv-paper-search | `backend/app/skills/arxiv-paper-search/` | arXiv 学术论文检索（按相关性/最新提交并行检索、字段限定） | arXiv API |
 | searxng | `backend/app/skills/searxng/` | 互联网通用搜索（新闻、动态、非学术信息） | 自部署 SearXNG 实例 |

@@ -79,7 +79,7 @@ Skill 管理
 ```
 manage_frontend
 |-- .gitignore                        # 忽略 node_modules, dist, .env
-|-- index.html                        # HTML 入口（标题：云顶新耀 智能体管理后台）
+|-- index.html                        # HTML 入口（标题：arXiv 研究助手 智能体管理后台）
 |-- package-lock.json                 # npm 锁文件
 |-- package.json                      # 项目依赖（React 19, react-router-dom, lucide-react, Tailwind CSS 4）
 |-- src

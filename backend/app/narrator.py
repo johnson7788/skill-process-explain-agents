@@ -1,5 +1,5 @@
 """
-Narrator / Explainer module for the 云顶新耀 medical research agent.
+Narrator / Explainer module for the arXiv research agent.
 
 Translates raw tool calls, thinking processes, and technical outputs into
 user-friendly explanation cards. This is a programmatic "旁路解说者"
