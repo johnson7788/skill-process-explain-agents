@@ -364,6 +364,9 @@ def _friendly_tool_name(raw: str) -> str:
         "load_skill": "加载技能",
         "web_search": "网络搜索",
         "generate_questionnaire": "生成问卷",
+        "todo": "任务规划",
+        "terminal": "终端命令",
+        "execute_code": "运行代码",
     }
     return mapping.get(raw, raw)
 
@@ -630,6 +633,9 @@ async def chat_stream(message: str, user_id: str = "default_user"):
         call_id_to_step: dict[str, str] = {}
         # 当前轮次待完成的 call ids
         pending_calls: dict[str, str] = {}  # call_id → step_id
+        # 代码执行：待完成的 code 块 id → step_id；已发过 step 的 code id（去重）
+        pending_code: dict[str, str] = {}
+        emitted_code_ids: set[str] = set()
 
         def emit(evt_data: dict):
             """收集事件到缓存、写入日志并返回 SSE 帧。"""
@@ -713,6 +719,58 @@ async def chat_stream(message: str, user_id: str = "default_user"):
                         "calls": calls_out,
                     })
                     step_count += 1
+                continue
+
+            # ---- 代码执行事件（ADK 内置 code executor）----
+            has_code = any(
+                getattr(p, "executable_code", None) or getattr(p, "code_execution_result", None)
+                for p in event.content.parts
+            )
+            if has_code:
+                for part in event.content.parts:
+                    ec = getattr(part, "executable_code", None)
+                    if ec and getattr(ec, "code", None):
+                        cid = ec.id or f"code_{step_count}"
+                        if cid in emitted_code_ids:
+                            continue
+                        emitted_code_ids.add(cid)
+                        step_id = f"step_{step_count}"
+                        yield emit({
+                            "type": "tool_step",
+                            "step_id": step_id,
+                            "summary": "运行代码",
+                            "call_count": 1,
+                            "calls": [{
+                                "id": cid,
+                                "tool_name": "execute_code",
+                                "display_name": "运行代码",
+                                "args_summary": (ec.code or "")[:2000],
+                                "status": "running",
+                                "result_summary": None,
+                            }],
+                        })
+                        pending_code[cid] = step_id
+                        step_count += 1
+
+                    cer = getattr(part, "code_execution_result", None)
+                    if cer is not None:
+                        rid = cer.id or ""
+                        outcome = str(getattr(cer, "outcome", "") or "").upper()
+                        output = getattr(cer, "output", "") or ""
+                        status = "error" if ("FAIL" in outcome or "ERROR" in outcome) else "done"
+                        step_id = pending_code.pop(rid, None)
+                        # code_execution_result 的 id 不一定与 executable_code 对应，
+                        # 退而关联最近一个待完成的代码块。
+                        if step_id is None and pending_code:
+                            rid, step_id = pending_code.popitem()
+                        if step_id:
+                            yield emit({
+                                "type": "tool_call",
+                                "step_id": step_id,
+                                "call_id": rid,
+                                "status": status,
+                                "result_summary": json.dumps({"output": output[:4000]}, ensure_ascii=False),
+                            })
                 continue
 
             # ---- 思考 / 正文 ----

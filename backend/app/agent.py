@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 from google.adk import Agent
 from google.adk.code_executors import UnsafeLocalCodeExecutor
 from google.adk.skills import load_skill_from_dir
+from google.adk.tools import FunctionTool
 from google.adk.tools.skill_toolset import SkillToolset
 
 from app.create_model import create_model
@@ -35,6 +36,7 @@ from app.narrator import (
     after_tool_callback,
     before_tool_callback,
 )
+from app.tools import terminal, todo
 
 load_dotenv()
 
@@ -93,7 +95,9 @@ root_agent = Agent(
     ),
     instruction=_INSTRUCTION,
     tools=[
-        skill_toolset
+        skill_toolset,
+        FunctionTool(todo),
+        FunctionTool(terminal),
     ],
     before_tool_callback=before_tool_callback,
     after_tool_callback=after_tool_callback,

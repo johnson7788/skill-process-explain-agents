@@ -60,6 +60,22 @@ TOOL_LABELS: dict[str, dict[str, str]] = {
         "icon": "🌐",
         "detail": "通过搜索引擎查找博客解读、代码仓库、技术新闻等非论文信息",
     },
+    # 任务规划与执行工具
+    "todo": {
+        "label": "规划任务清单",
+        "icon": "🗂️",
+        "detail": "拆解并跟踪本次研究任务的执行步骤",
+    },
+    "terminal": {
+        "label": "执行终端命令",
+        "icon": "⌨️",
+        "detail": "在服务器上运行命令并读取输出",
+    },
+    "execute_code": {
+        "label": "运行代码",
+        "icon": "🐍",
+        "detail": "编写并执行 Python 代码处理数据或计算",
+    },
     # 通用 fallback 模式
     "_search": {
         "label": "搜索信息",
