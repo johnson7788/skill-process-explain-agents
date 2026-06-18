@@ -58,6 +58,15 @@ OLLAMA_API_KEY=
 OLLAMA_API_URL=http://localhost:11434/v1
 
 # ---------------------------------------------------------------------------
+# 视觉模型（用于 vision_analyze 图片分析/OCR）
+# ---------------------------------------------------------------------------
+# DeepSeek 等纯文本模型无视觉能力，图片分析需单独配置视觉模型。
+# 默认使用阿里百炼 qwen-vl-max（OpenAI 兼容端点）。
+VISION_MODEL=openai/qwen-vl-max
+VISION_API_KEY=
+VISION_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
+
+# ---------------------------------------------------------------------------
 # SSE 响应缓存（缓存位置：backend/cache/）
 # ---------------------------------------------------------------------------
 # 是否启用缓存：true/1/yes/on 启用，false/0/no/off 关闭（默认启用）

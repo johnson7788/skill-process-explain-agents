@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 TEXT_EXTS = {".txt", ".csv", ".json", ".xml", ".md", ".log",
              ".yaml", ".yml", ".cfg", ".ini"}
 
+# 图片文件扩展名（无法直接提取文本，需用 vision_analyze 工具识别）
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+
 
 def read_pdf(path: Path, max_chars: int = 50000) -> str:
     """提取 PDF 文本，每页带 [第X页] 标记。"""
@@ -253,6 +256,12 @@ def read_file(path: Path, max_chars: int = 50000) -> str:
         return read_ppt_legacy(path, max_chars)
     elif suffix in TEXT_EXTS:
         return read_text(path, max_chars)
+    elif suffix in IMAGE_EXTS:
+        return (
+            f"[图片文件: {path.name}]\n"
+            f"这是一张图片，无法直接读取文本。如需理解图片内容或识别其中文字，"
+            f"请调用 vision_analyze 工具，参数 image=\"{path.name}\"。"
+        )
     else:
         size = path.stat().st_size if path.exists() else 0
         return f"[二进制文件，类型: {suffix}，大小: {size} bytes, 名称: {path.name}]"

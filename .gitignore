@@ -76,3 +76,4 @@ logs/
 # 用户上传文件（运行时产物）
 uploads/
 **/uploads/
+docs/migration-plan.md

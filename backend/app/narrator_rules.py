@@ -76,6 +76,11 @@ TOOL_LABELS: dict[str, dict[str, str]] = {
         "icon": "🐍",
         "detail": "编写并执行 Python 代码处理数据或计算",
     },
+    "vision_analyze": {
+        "label": "分析图片",
+        "icon": "🖼️",
+        "detail": "识别图片内容或提取图中文字（OCR）",
+    },
     # 通用 fallback 模式
     "_search": {
         "label": "搜索信息",

@@ -367,6 +367,7 @@ def _friendly_tool_name(raw: str) -> str:
         "todo": "任务规划",
         "terminal": "终端命令",
         "execute_code": "运行代码",
+        "vision_analyze": "图片分析",
     }
     return mapping.get(raw, raw)
 

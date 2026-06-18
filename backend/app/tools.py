@@ -9,9 +9,15 @@ P1 工具：
 
 from __future__ import annotations
 
+import base64
+import os
+import pathlib
 import subprocess
 
 from google.adk.tools import ToolContext
+
+# 上传目录（与 agent.py 一致；此处本地定义以避免循环导入）
+UPLOADS_DIR = pathlib.Path(__file__).parent.parent / "uploads"
 
 # ---------------------------------------------------------------------------
 # todo — 任务规划
@@ -87,5 +93,71 @@ def terminal(command: str, timeout: int = 60) -> dict:
         }
     except subprocess.TimeoutExpired:
         return {"error": f"命令超时（>{timeout}s）"}
+    except Exception as e:  # noqa: BLE001 — 工具边界，统一回报给模型
+        return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# vision_analyze — 图片内容分析 / OCR
+# ---------------------------------------------------------------------------
+# DeepSeek 无视觉能力，这里单独用一个视觉模型（默认 qwen-vl-max，OpenAI 兼容端点）。
+_VISION_MODEL = os.environ.get("VISION_MODEL", "openai/qwen-vl-max")
+_VISION_KEY = os.environ.get("VISION_API_KEY")
+_VISION_BASE = os.environ.get(
+    "VISION_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+)
+_VISION_MAX_BYTES = 10 * 1024 * 1024  # 单图 10MB 上限
+_IMAGE_MIME = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp",
+}
+
+
+def vision_analyze(image: str, prompt: str = "描述这张图片的内容，并识别其中的文字") -> dict:
+    """分析图片内容或对图片做 OCR 文字识别。
+
+    适用于用户上传了图片（如截图、图表、扫描件、含文字的图片）需要理解或提取文字的场景。
+    image 可以是 http(s) 图片 URL，或用户已上传的图片文件名（位于 uploads 目录）。
+    prompt 描述你想从图片中获取什么信息（如"提取图中表格数据"、"这是什么模型结构图"）。
+
+    返回 {"analysis": str}，失败返回 {"error": str}。
+    """
+    if not _VISION_KEY:
+        return {"error": "未配置 VISION_API_KEY，无法使用图片分析。请在 .env 中设置视觉模型。"}
+
+    try:
+        if image.startswith(("http://", "https://")):
+            import httpx
+            resp = httpx.get(image, timeout=30, follow_redirects=True)
+            resp.raise_for_status()
+            data = resp.content
+            mime = resp.headers.get("content-type", "image/jpeg").split(";")[0]
+            if not mime.startswith("image/"):
+                mime = "image/jpeg"
+        else:
+            p = next(UPLOADS_DIR.rglob(image), None)
+            if p is None or not p.is_file():
+                return {"error": f"未找到图片文件: {image}（请确认已上传）"}
+            data = p.read_bytes()
+            mime = _IMAGE_MIME.get(p.suffix.lower(), "image/jpeg")
+
+        if len(data) > _VISION_MAX_BYTES:
+            return {"error": f"图片过大（{len(data) // 1024 // 1024}MB > 10MB），请压缩后重试。"}
+
+        b64 = base64.b64encode(data).decode()
+        import litellm
+        completion = litellm.completion(
+            model=_VISION_MODEL,
+            api_key=_VISION_KEY,
+            api_base=_VISION_BASE,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                ],
+            }],
+        )
+        return {"analysis": completion.choices[0].message.content}
     except Exception as e:  # noqa: BLE001 — 工具边界，统一回报给模型
         return {"error": str(e)}
