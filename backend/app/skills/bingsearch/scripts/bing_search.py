@@ -278,27 +278,60 @@ async def advanced_search(
         logger.error(f"高级搜索出错: {e}")
         return {"error": f"高级搜索失败: {e}"}
 
-async def main():
+async def fetch_url_content(url: str, site: Optional[str] = None) -> str:
+    """根据 URL 抓取网页正文（无需先经过 search_bing）。"""
+    rid = f"direct_{datetime.now().timestamp()}"
+    search_results[rid] = {"id": rid, "link": url, "site": site}
+    return await fetch_webpage_content(rid)
 
-    print("\n== Demo: Bing search + fetch ==")
-    try:
-        results = await search_bing("site:tesla.cn 特斯拉", num_results=3)
-        print(json.dumps(results, ensure_ascii=False, indent=2)[:5000], "...\n")
-        if results:
-            rid = results[0]["id"]
-            content = await fetch_webpage_content(rid)
-            print(content[:5000], "...\n")
-    except Exception as e:
-        print("Bing demo error:", e)
 
-    print("\n== Demo: Advanced search ==")
-    try:
-        adv = await advanced_search(
-            "特斯拉", sites=["tesla.cn"], exclude_sites=["cn.bing.com"], file_type=None, num_results=3
+# --------------------------------------------------------------------------------------
+# 命令行入口
+# --------------------------------------------------------------------------------------
+import argparse
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Bing 搜索工具")
+    sub = parser.add_subparsers(dest="mode", required=True)
+
+    p_search = sub.add_parser("search", help="Bing 关键词搜索")
+    p_search.add_argument("query", help="搜索关键词")
+    p_search.add_argument("--num", "-n", type=int, default=5, help="返回结果数量（默认 5）")
+    p_search.add_argument("--site", "-s", default=None, help="限定站点，如 tesla.cn")
+
+    p_fetch = sub.add_parser("fetch", help="抓取网页正文")
+    p_fetch.add_argument("url", help="要抓取的网页 URL")
+
+    p_adv = sub.add_parser("advanced", help="高级搜索（站点/排除/文件类型过滤）")
+    p_adv.add_argument("query", help="搜索关键词")
+    p_adv.add_argument("--site", "-s", action="append", default=None, help="限定站点（可多次）")
+    p_adv.add_argument("--exclude", "-x", action="append", default=None, help="排除站点（可多次）")
+    p_adv.add_argument("--filetype", "-t", default=None, help="文件类型，如 pdf")
+    p_adv.add_argument("--num", "-n", type=int, default=5, help="返回结果数量（默认 5）")
+
+    args = parser.parse_args()
+
+    if args.mode == "search":
+        result: Any = asyncio.run(search_bing(args.query, num_results=args.num, site=args.site))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    elif args.mode == "fetch":
+        content = asyncio.run(fetch_url_content(args.url))
+        print(content)
+
+    elif args.mode == "advanced":
+        result = asyncio.run(
+            advanced_search(
+                args.query,
+                sites=args.site,
+                exclude_sites=args.exclude,
+                file_type=args.filetype,
+                num_results=args.num,
+            )
         )
-        print(json.dumps(adv, ensure_ascii=False, indent=2)[:600], "...\n")
-    except Exception as e:
-        print("Advanced search demo error:", e)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
