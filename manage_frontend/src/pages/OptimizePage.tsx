@@ -149,16 +149,24 @@ function ToolCallRow({ call }: { call: OptimizeToolCallInfo }) {
   );
 }
 
-function ThoughtBubble({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
+function ThoughtBubble({ text, thinking = false }: { text: string; thinking?: boolean }) {
+  const [open, setOpen] = useState(thinking);
+  // 思考时自动展开，思考结束自动收缩
+  useEffect(() => {
+    setOpen(thinking);
+  }, [thinking]);
   return (
     <div className="my-1">
       <button
         onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-600 transition-colors"
       >
-        <Brain className="w-3.5 h-3.5" />
-        <span>思考过程</span>
+        {thinking ? (
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-500" />
+        ) : (
+          <Brain className="w-3.5 h-3.5" />
+        )}
+        <span>{thinking ? "思考中..." : "思考过程"}</span>
         {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
       </button>
       {open && (
@@ -230,14 +238,16 @@ function MarkdownContent({ text }: { text: string }) {
   );
 }
 
-function AssistantBubble({ msg }: { msg: ChatMessage }) {
+function AssistantBubble({ msg, streaming = false }: { msg: ChatMessage; streaming?: boolean }) {
   const isStreaming = msg.timeline.length === 0;
   const lastItem = msg.timeline[msg.timeline.length - 1];
   return (
     <div className="flex flex-col gap-0.5">
       {msg.timeline.map((item, i) => {
         if (item.kind === "thought") {
-          return <ThoughtBubble key={`th-${i}`} text={item.text} />;
+          // 最后一项 thought 且整体仍在流式输出 → 正在思考
+          const isThinking = streaming && item === lastItem;
+          return <ThoughtBubble key={`th-${i}`} text={item.text} thinking={isThinking} />;
         }
         if (item.kind === "tool") {
           return <ToolStepCard key={item.step.step_id} step={item.step} />;
@@ -593,7 +603,7 @@ export default function OptimizePage() {
             msg.role === "user" ? (
               <UserBubble key={i} msg={msg} />
             ) : (
-              <AssistantBubble key={i} msg={msg} />
+              <AssistantBubble key={i} msg={msg} streaming={streaming && i === messages.length - 1} />
             )
           )}
 
