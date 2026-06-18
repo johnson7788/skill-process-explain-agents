@@ -104,9 +104,10 @@ class SSECache:
     TTL 和 LRU 基于文件的修改时间（mtime）。
     """
 
-    def __init__(self, max_size: int = 500, ttl: int = 86400):
+    def __init__(self, max_size: int = 500, ttl: int = 86400, enabled: bool = True):
         self._max_size = max_size
         self._ttl = ttl
+        self._enabled = enabled
 
     @staticmethod
     def _make_key(message: str) -> str:
@@ -118,6 +119,8 @@ class SSECache:
         return CACHE_DIR / f"{key}.json"
 
     def get(self, message: str) -> list | None:
+        if not self._enabled:
+            return None
         key = self._make_key(message)
         p = self._path(key)
         if not p.exists():
@@ -140,6 +143,8 @@ class SSECache:
             return None
 
     def set(self, message: str, events: list) -> None:
+        if not self._enabled:
+            return
         key = self._make_key(message)
         self._evict_if_needed()
 
@@ -175,6 +180,7 @@ class SSECache:
         files = list(CACHE_DIR.glob("*.json"))
         total_size = sum(f.stat().st_size for f in files)
         return {
+            "enabled": self._enabled,
             "size": len(files),
             "max_size": self._max_size,
             "ttl": self._ttl,
@@ -184,9 +190,12 @@ class SSECache:
 
 
 # 模块级缓存实例（可通过环境变量配置）
+# SSE_CACHE_ENABLED 控制是否启用缓存（true/1/yes/on 启用，默认启用）
 _sse_cache = SSECache(
     max_size=int(os.environ.get("SSE_CACHE_MAX_SIZE", "500")),
     ttl=int(os.environ.get("SSE_CACHE_TTL", "86400")),  # 默认 24 小时
+    enabled=os.environ.get("SSE_CACHE_ENABLED", "true").strip().lower()
+    in ("true", "1", "yes", "on"),
 )
 
 
