@@ -14,7 +14,7 @@
   1. arxiv-paper-search — arXiv 学术论文检索
      支持按相关性/最新提交并行检索、按分类/作者检索、
      自由检索表达式
-  2. searxng — 互联网通用搜索（SearXNG 实例）
+  2. bingsearch — 互联网通用搜索（Bing 搜索）
      支持通用、新闻、图片、视频搜索，可指定语言和搜索引擎
 """
 
@@ -58,9 +58,9 @@ arxiv_paper_search_skill = load_skill_from_dir(
     SKILLS_DIR / "arxiv-paper-search"
 )
 
-# Skill 2: 网页搜索 — SearXNG 实例
-searxng_search_skill = load_skill_from_dir(
-    SKILLS_DIR / "searxng"
+# Skill 2: 网页搜索 — Bing 搜索
+bing_search_skill = load_skill_from_dir(
+    SKILLS_DIR / "bingsearch"
 )
 
 # ---------------------------------------------------------------------------
@@ -69,7 +69,7 @@ searxng_search_skill = load_skill_from_dir(
 skill_toolset = SkillToolset(
     skills=[
         arxiv_paper_search_skill,
-        searxng_search_skill,
+        bing_search_skill,
     ]
 )
 
