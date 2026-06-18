@@ -32,11 +32,16 @@ interface ToolStep {
   calls: OptimizeToolCallInfo[];
 }
 
+// 时序项：思考 / 正文 / 工具，按到达顺序排列，连续思考合并为一项
+type TimelineItem =
+  | { kind: "thought"; text: string }
+  | { kind: "text"; text: string }
+  | { kind: "tool"; step: ToolStep };
+
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
-  thoughts: string[];
-  toolSteps: ToolStep[];
+  timeline: TimelineItem[];
 }
 
 // ---------------------------------------------------------------------------
@@ -225,19 +230,31 @@ function MarkdownContent({ text }: { text: string }) {
 }
 
 function AssistantBubble({ msg }: { msg: ChatMessage }) {
-  const isStreaming = msg.content === "" && msg.toolSteps.length === 0 && msg.thoughts.length === 0;
+  const isStreaming = msg.timeline.length === 0;
+  const lastItem = msg.timeline[msg.timeline.length - 1];
   return (
     <div className="flex flex-col gap-0.5">
-      {msg.thoughts.map((t, i) => (
-        <ThoughtBubble key={i} text={t} />
-      ))}
-      {msg.toolSteps.map((step) => (
-        <ToolStepCard key={step.step_id} step={step} />
-      ))}
-      {(msg.content || isStreaming) && (
-        <div className="rounded-xl bg-white border border-gray-200 px-4 py-3 text-sm text-gray-800 leading-relaxed">
-          <MarkdownContent text={msg.content} />
-          {isStreaming && <span className="animate-pulse">▌</span>}
+      {msg.timeline.map((item, i) => {
+        if (item.kind === "thought") {
+          return <ThoughtBubble key={`th-${i}`} text={item.text} />;
+        }
+        if (item.kind === "tool") {
+          return <ToolStepCard key={item.step.step_id} step={item.step} />;
+        }
+        const isLastText = item === lastItem;
+        return (
+          <div
+            key={`tx-${i}`}
+            className="rounded-xl bg-white border border-gray-200 px-4 py-3 text-sm text-gray-800 leading-relaxed"
+          >
+            <MarkdownContent text={item.text} />
+            {isLastText && isStreaming && <span className="animate-pulse">▌</span>}
+          </div>
+        );
+      })}
+      {isStreaming && (
+        <div className="rounded-xl bg-white border border-gray-200 px-4 py-3 text-sm text-gray-400 leading-relaxed">
+          <span className="animate-pulse">▌</span>
         </div>
       )}
     </div>
@@ -323,8 +340,8 @@ export default function OptimizePage() {
     const text = input.trim();
     if (!text || streaming) return;
 
-    const userMsg: ChatMessage = { role: "user", content: text, thoughts: [], toolSteps: [] };
-    const assistantMsg: ChatMessage = { role: "assistant", content: "", thoughts: [], toolSteps: [] };
+    const userMsg: ChatMessage = { role: "user", content: text, timeline: [] };
+    const assistantMsg: ChatMessage = { role: "assistant", content: "", timeline: [] };
 
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setInput("");
@@ -340,43 +357,71 @@ export default function OptimizePage() {
         setMessages((prev) => {
           const msgs = [...prev];
           const last = { ...msgs[msgs.length - 1] };
+          const timeline = [...last.timeline];
+          const tail = timeline[timeline.length - 1];
 
           if (evt.type === "text") {
-            last.content += evt.text;
-          } else if (evt.type === "thought") {
-            last.thoughts = [...last.thoughts, evt.narrated || evt.raw];
-          } else if (evt.type === "tool_step") {
-            const existing = last.toolSteps.find((s) => s.step_id === evt.step_id);
-            if (existing) {
-              last.toolSteps = last.toolSteps.map((s) =>
-                s.step_id === evt.step_id ? { ...s, calls: evt.calls, summary: evt.summary } : s
-              );
+            if (tail && tail.kind === "text") {
+              // 连续正文合并到同一段
+              timeline[timeline.length - 1] = { kind: "text", text: tail.text + evt.text };
             } else {
-              last.toolSteps = [
-                ...last.toolSteps,
-                { step_id: evt.step_id, summary: evt.summary, calls: evt.calls },
-              ];
+              timeline.push({ kind: "text", text: evt.text });
+            }
+          } else if (evt.type === "thought") {
+            const chunk = evt.narrated || evt.raw;
+            if (tail && tail.kind === "thought") {
+              // 连续思考拼接为同一张卡片
+              timeline[timeline.length - 1] = { kind: "thought", text: tail.text + chunk };
+            } else {
+              timeline.push({ kind: "thought", text: chunk });
+            }
+          } else if (evt.type === "tool_step") {
+            const idx = timeline.findIndex(
+              (it) => it.kind === "tool" && it.step.step_id === evt.step_id
+            );
+            if (idx >= 0) {
+              timeline[idx] = {
+                kind: "tool",
+                step: { step_id: evt.step_id, summary: evt.summary, calls: evt.calls },
+              };
+            } else {
+              timeline.push({
+                kind: "tool",
+                step: { step_id: evt.step_id, summary: evt.summary, calls: evt.calls },
+              });
             }
           } else if (evt.type === "tool_call") {
-            last.toolSteps = last.toolSteps.map((step) => {
-              if (step.step_id !== evt.step_id) return step;
-              return {
-                ...step,
-                calls: step.calls.map((c) =>
-                  c.id === evt.call_id
-                    ? {
-                        ...c,
-                        status: evt.status as OptimizeToolCallInfo["status"],
-                        result_summary: evt.result_summary,
-                      }
-                    : c
-                ),
+            const idx = timeline.findIndex(
+              (it) => it.kind === "tool" && it.step.step_id === evt.step_id
+            );
+            if (idx >= 0 && timeline[idx].kind === "tool") {
+              const step = (timeline[idx] as { kind: "tool"; step: ToolStep }).step;
+              timeline[idx] = {
+                kind: "tool",
+                step: {
+                  ...step,
+                  calls: step.calls.map((c) =>
+                    c.id === evt.call_id
+                      ? {
+                          ...c,
+                          status: evt.status as OptimizeToolCallInfo["status"],
+                          result_summary: evt.result_summary,
+                        }
+                      : c
+                  ),
+                },
               };
-            });
+            }
           } else if (evt.type === "error") {
-            last.content += `\n\n⚠️ 错误: ${evt.message}`;
+            const errText = `\n\n⚠️ 错误: ${evt.message}`;
+            if (tail && tail.kind === "text") {
+              timeline[timeline.length - 1] = { kind: "text", text: tail.text + errText };
+            } else {
+              timeline.push({ kind: "text", text: errText });
+            }
           }
 
+          last.timeline = timeline;
           msgs[msgs.length - 1] = last;
           return msgs;
         });
