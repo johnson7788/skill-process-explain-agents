@@ -1,0 +1,795 @@
+#!/usr/bin/env python3
+"""
+云顶新耀 医学研究智能体 — FastAPI 服务端（协议 v2）
+
+SSE 事件类型（GET /chat/stream）：
+
+  type: "text"          正文增量（打字机）
+  type: "thought"       思考过程（含 narrated 翻译）
+  type: "tool_step"     Agent 单轮工具步骤（含子调用列表）
+  type: "tool_call"     单次工具调用结束（含 status/result 摘要）
+  type: "done"          流结束汇总
+
+前端凭 tool_step 渲染可折叠的工具卡片，凭 tool_call 更新子条目状态。
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import re
+import sys
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from dotenv import load_dotenv
+load_dotenv()
+
+# 禁用系统代理 — macOS 系统代理 127.0.0.1:7890 未运行时会导致所有 API 请求失败
+os.environ["no_proxy"] = "*"
+os.environ["NO_PROXY"] = "*"
+
+if not os.environ.get("DEEPSEEK_API_KEY"):
+    print("错误: DEEPSEEK_API_KEY 未设置。")
+    sys.exit(1)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("yunding")
+
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse, JSONResponse
+from google.adk.agents.run_config import RunConfig, StreamingMode
+from google.adk.artifacts import InMemoryArtifactService
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from google.genai import types
+from pydantic import BaseModel
+
+from app.agent import root_agent, UPLOADS_DIR
+from app.file_reader import read_file
+from app.narrator import _explain_thinking, get_narrator_cards
+
+# ---------------------------------------------------------------------------
+APP_NAME = "yundingxinyao-medical-research"
+
+app = FastAPI(title="云顶新耀 医学研究智能体")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+session_service = InMemorySessionService()
+artifact_service = InMemoryArtifactService()
+runner = Runner(
+    agent=root_agent,
+    session_service=session_service,
+    artifact_service=artifact_service,
+    app_name=APP_NAME,
+)
+
+NARRATOR_STATE_KEY = "_narrator_cards"
+
+
+# ---------------------------------------------------------------------------
+# SSE 响应缓存 — 持久化到本地 cache/ 目录，重启不丢失，方便回溯
+# ---------------------------------------------------------------------------
+CACHE_DIR = Path(__file__).parent / "cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+class SSECache:
+    """
+    基于文件系统的 SSE 事件缓存。
+
+    每个缓存条目是一个 JSON 文件：cache/{md5}.json
+    文件内容包含原始消息、事件列表和元信息，方便人工回溯。
+    TTL 和 LRU 基于文件的修改时间（mtime）。
+    """
+
+    def __init__(self, max_size: int = 500, ttl: int = 86400):
+        self._max_size = max_size
+        self._ttl = ttl
+
+    @staticmethod
+    def _make_key(message: str) -> str:
+        """生成缓存 key：对消息文本归一化后取 MD5。"""
+        normalized = " ".join(message.strip().lower().split())
+        return hashlib.md5(normalized.encode("utf-8")).hexdigest()
+
+    def _path(self, key: str) -> Path:
+        return CACHE_DIR / f"{key}.json"
+
+    def get(self, message: str) -> list | None:
+        key = self._make_key(message)
+        p = self._path(key)
+        if not p.exists():
+            return None
+
+        # TTL 检查（基于文件修改时间）
+        mtime = p.stat().st_mtime
+        if time.time() - mtime > self._ttl:
+            p.unlink(missing_ok=True)
+            return None
+
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            # 更新 mtime（touch）以支持 LRU
+            p.touch()
+            return data.get("events")
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Cache read error for %s: %s", key, e)
+            p.unlink(missing_ok=True)
+            return None
+
+    def set(self, message: str, events: list) -> None:
+        key = self._make_key(message)
+        self._evict_if_needed()
+
+        data = {
+            "key": key,
+            "message": message[:500],  # 保留原始消息前 500 字符，方便人工识别
+            "event_count": len(events),
+            "created_at": datetime.now().isoformat(),
+            "events": events,
+        }
+        try:
+            self._path(key).write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            logger.warning("Cache write error for %s: %s", key, e)
+
+    def _evict_if_needed(self) -> None:
+        """如果缓存文件数超过 max_size，按 mtime 淘汰最旧的。"""
+        files = sorted(CACHE_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime)
+        while len(files) >= self._max_size:
+            oldest = files.pop(0)
+            oldest.unlink(missing_ok=True)
+
+    def clear(self) -> int:
+        files = list(CACHE_DIR.glob("*.json"))
+        for f in files:
+            f.unlink(missing_ok=True)
+        return len(files)
+
+    def info(self) -> dict:
+        files = list(CACHE_DIR.glob("*.json"))
+        total_size = sum(f.stat().st_size for f in files)
+        return {
+            "size": len(files),
+            "max_size": self._max_size,
+            "ttl": self._ttl,
+            "total_size_kb": round(total_size / 1024, 1),
+            "dir": str(CACHE_DIR),
+        }
+
+
+# 模块级缓存实例（可通过环境变量配置）
+_sse_cache = SSECache(
+    max_size=int(os.environ.get("SSE_CACHE_MAX_SIZE", "500")),
+    ttl=int(os.environ.get("SSE_CACHE_TTL", "86400")),  # 默认 24 小时
+)
+
+
+# ---------------------------------------------------------------------------
+# Session 日志 — 每个会话独立 JSONL 文件，记录完整交互过程
+# ---------------------------------------------------------------------------
+LOGS_DIR = Path(__file__).parent / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+class SessionLogger:
+    """
+    每个 session 写入一个独立的 JSONL 日志文件。
+
+    文件格式：logs/{YYYYMMDD_HHMMSS}_{session_id}.jsonl
+    每行一个 JSON 对象，类型包括：
+      - meta:        会话元信息（user_id, message, session_id, start_time）
+      - text:        正文增量
+      - thought:     思考过程
+      - tool_step:   工具步骤
+      - tool_call:   工具调用结果
+      - narrator_card: 解说卡片
+      - done:        流结束汇总
+      - error:       异常信息
+    """
+
+    def __init__(self, session_id: str, user_id: str, message: str):
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_id = session_id.replace("/", "_").replace("\\", "_")[:32]
+        self.path = LOGS_DIR / f"{ts}_{safe_id}.jsonl"
+        self._fh = open(self.path, "w", encoding="utf-8")
+        self._event_count = 0
+        self._start_time = time.time()
+
+        # 写入元信息
+        self._write({
+            "type": "meta",
+            "session_id": session_id,
+            "user_id": user_id,
+            "message": message,
+            "start_time": datetime.now().isoformat(),
+        })
+        logger.info("Session log → %s", self.path.name)
+
+    def _write(self, record: dict) -> None:
+        """写入一行 JSONL。"""
+        record["ts"] = time.time()
+        self._fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        self._fh.flush()
+
+    def log_event(self, evt: dict) -> None:
+        """记录一个 SSE 事件（text/thought/tool_step/tool_call/narrator_card/done）。"""
+        self._write(evt)
+        self._event_count += 1
+
+    def log_error(self, error: str) -> None:
+        """记录异常。"""
+        self._write({"type": "error", "error": error})
+
+    def close(self) -> None:
+        """写入汇总并关闭文件。"""
+        elapsed = round(time.time() - self._start_time, 2)
+        self._write({
+            "type": "summary",
+            "event_count": self._event_count,
+            "elapsed_seconds": elapsed,
+            "end_time": datetime.now().isoformat(),
+        })
+        self._fh.close()
+        logger.info("Session log closed: %d events, %.1fs → %s",
+                     self._event_count, elapsed, self.path.name)
+
+
+class ChatRequest(BaseModel):
+    message: str
+    user_id: str = "default_user"
+
+
+# ---------------------------------------------------------------------------
+# 工具步骤解析助手
+# ---------------------------------------------------------------------------
+
+def _extract_tool_info(event) -> dict | None:
+    """
+    从 ADK event 中提取工具调用信息。
+    返回:
+      {
+        "step_summary": str,    # 本轮 Agent 的简短思维摘要（从 thought/text 提取）
+        "calls": [              # 本轮所有工具调用
+          {
+            "id": str,
+            "tool_name": str,
+            "display_name": str,  # 更友好的显示名
+            "args_summary": str,  # 参数摘要（截断）
+            "status": "running"|"done"|"error",
+            "result_summary": str | None,
+          }
+        ]
+      }
+    若本 event 不含工具调用则返回 None。
+    """
+    if not event.content or not event.content.parts:
+        return None
+
+    calls = []
+    step_summary_parts = []
+
+    for part in event.content.parts:
+        # 思考文本 → 作为 step_summary
+        if hasattr(part, "thought") and part.thought:
+            raw = (part.text or "").strip()
+            if raw:
+                step_summary_parts.append(raw)
+            continue
+
+        # 普通文本（Agent 自述）→ 也收入 step_summary
+        if hasattr(part, "text") and part.text and not calls:
+            step_summary_parts.append(part.text.strip())
+            continue
+
+        # function_call
+        if hasattr(part, "function_call") and part.function_call:
+            fc = part.function_call
+            args_str = json.dumps(fc.args or {}, ensure_ascii=False)
+            calls.append({
+                "id": fc.id or str(uuid.uuid4())[:8],
+                "tool_name": fc.name,
+                "display_name": _friendly_tool_name(fc.name),
+                "args_summary": args_str,
+                "status": "running",
+                "result_summary": None,
+            })
+
+        # function_response
+        if hasattr(part, "function_response") and part.function_response:
+            fr = part.function_response
+            result_raw = fr.response or {}
+            result_str = json.dumps(result_raw, ensure_ascii=False)
+            status = "error" if _is_error_result(result_raw) else "done"
+            calls.append({
+                "id": fr.id or str(uuid.uuid4())[:8],
+                "tool_name": fr.name,
+                "display_name": _friendly_tool_name(fr.name),
+                "args_summary": "",
+                "status": status,
+                "result_summary": result_str,
+            })
+
+    if not calls:
+        return None
+
+    return {
+        "step_summary": " ".join(step_summary_parts) or calls[0]["display_name"],
+        "calls": calls,
+    }
+
+
+def _friendly_tool_name(raw: str) -> str:
+    """把内部工具名转换为用户友好的中文显示名。"""
+    mapping = {
+        "medical_keyword_search": "医学关键词检索",
+        "europe_pmc_fetch": "获取 Europe PMC 全文",
+        "write_file": "写入文件",
+        "read_file": "读取文件",
+        "list_files": "列出文件",
+        "execute_command": "执行命令",
+        "load_skill": "加载技能",
+        "web_search": "网络搜索",
+        "generate_questionnaire": "生成问卷",
+    }
+    return mapping.get(raw, raw)
+
+
+def _is_error_result(result: dict) -> bool:
+    if not isinstance(result, dict):
+        return False
+    return (
+        result.get("error")
+        or result.get("status") == "error"
+        or "Error" in str(result.get("output", ""))
+    )
+
+
+# DeepSeek 思考 token 会在 CJK 字符间插入空格（如 "用 户 想 对 比"），
+# 此函数去除 CJK 汉字之间的多余空格，保留中英文之间的自然间隔。
+_CJK_IDEOGRAPHS = (
+    r"\u4e00-\u9fff"       # CJK 统一汉字（基本区，覆盖 99%+ 常用字）
+    r"\u3400-\u4dbf"       # CJK 扩展 A
+    r"\uf900-\ufaff"       # CJK 兼容汉字
+)
+_CJK_RE = re.compile(rf"([{_CJK_IDEOGRAPHS}])\s+([{_CJK_IDEOGRAPHS}])")
+
+
+def _fix_thought_spacing(text: str) -> str:
+    """修复 DeepSeek thinking tokens 中 CJK 字符间的多余空格。"""
+    prev = ""
+    while prev != text:
+        prev = text
+        text = _CJK_RE.sub(r"\1\2", text)
+    return text
+
+
+# ---------------------------------------------------------------------------
+# 文件辅助
+# ---------------------------------------------------------------------------
+
+def _get_uploaded_files_info(user_id: str) -> list[dict]:
+    user_dir = UPLOADS_DIR / user_id
+    if not user_dir.exists():
+        return []
+    files = [
+        {
+            "name": f.name,
+            "size": f.stat().st_size,
+            "path": str(f.absolute()),
+            "modified": f.stat().st_mtime,
+        }
+        for f in user_dir.iterdir() if f.is_file()
+    ]
+    return sorted(files, key=lambda x: x["modified"], reverse=True)
+
+
+def _build_message_with_files(message: str, user_id: str) -> str:
+    files = _get_uploaded_files_info(user_id)
+    if not files:
+        return message
+    parts = [message, "", "---",
+             "[系统提示] 以下是你可用的已上传文件（已包含位置标记，引用时必须注明文件名和位置）："]
+    for f_info in files:
+        fpath = Path(f_info["path"])
+        content = read_file(fpath)
+        parts.append(f"\n### 文件: {f_info['name']}\n大小: {f_info['size']} bytes\n内容:\n{content}")
+    parts.append(
+        "\n## 引用规则（重要）\n"
+        "- 回答中引用上传文件内容时，必须注明文件名和页码/幻灯片号。\n"
+        "- PDF: `（来源: xxx.pdf 第X页）` | PPT: `（来源: xxx.pptx 幻灯片X）` | 文本: `（来源: xxx.txt）`\n"
+    )
+    return "\n".join(parts)
+
+
+async def _get_current_cards(user_id: str, session_id: str) -> list[dict]:
+    try:
+        sess = await session_service.get_session(
+            app_name=APP_NAME, user_id=user_id, session_id=session_id
+        )
+        if sess and sess.state:
+            return get_narrator_cards(sess.state)
+    except Exception:
+        pass
+    return []
+
+
+# ---------------------------------------------------------------------------
+# POST /upload
+# ---------------------------------------------------------------------------
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...), user_id: str = Form(default="default_user")):
+    user_dir = UPLOADS_DIR / user_id
+    user_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = file.filename or "unnamed"
+    dest_path = user_dir / safe_name
+    if dest_path.exists():
+        stem, suffix = os.path.splitext(safe_name)
+        counter = 1
+        while dest_path.exists():
+            dest_path = user_dir / f"{stem}_{counter}{suffix}"
+            counter += 1
+    content = await file.read()
+    dest_path.write_bytes(content)
+    return JSONResponse({"success": True, "filename": dest_path.name, "size": len(content)})
+
+
+@app.get("/uploads")
+async def list_uploads(user_id: str = "default_user"):
+    return JSONResponse({"user_id": user_id, "files": _get_uploaded_files_info(user_id)})
+
+
+@app.delete("/uploads")
+async def clear_uploads(user_id: str = "default_user"):
+    import shutil
+    user_dir = UPLOADS_DIR / user_id
+    if user_dir.exists():
+        shutil.rmtree(user_dir)
+        user_dir.mkdir(parents=True, exist_ok=True)
+    return JSONResponse({"success": True})
+
+
+# ---------------------------------------------------------------------------
+# SSE 缓存管理接口
+# ---------------------------------------------------------------------------
+@app.get("/cache/info")
+async def cache_info():
+    """查看 SSE 缓存状态。"""
+    return JSONResponse(_sse_cache.info())
+
+
+@app.delete("/cache")
+async def cache_clear():
+    """清空 SSE 缓存。"""
+    count = _sse_cache.clear()
+    return JSONResponse({"success": True, "cleared": count})
+
+
+# ---------------------------------------------------------------------------
+# POST /chat — 非流式完整响应
+# ---------------------------------------------------------------------------
+@app.post("/chat")
+async def chat(req: ChatRequest):
+    session = await session_service.create_session(user_id=req.user_id, app_name=APP_NAME)
+    full_message = _build_message_with_files(req.message, req.user_id)
+    message = types.Content(role="user", parts=[types.Part.from_text(text=full_message)])
+    slog = SessionLogger(session.id, req.user_id, req.message)
+
+    full_response: list[str] = []
+    thoughts: list[dict] = []
+    tool_steps: list[dict] = []
+
+    try:
+        async for event in runner.run_async(
+            new_message=message,
+            user_id=req.user_id,
+            session_id=session.id,
+            run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+        ):
+            if not event.content or not event.content.parts:
+                continue
+            if getattr(event, "partial", True) is False:
+                continue
+
+            tool_info = _extract_tool_info(event)
+            if tool_info:
+                tool_steps.append(tool_info)
+                slog.log_event({"type": "tool_step", **tool_info})
+                continue
+
+            for part in event.content.parts:
+                if hasattr(part, "thought") and part.thought:
+                    raw = (part.text or "")
+                    if raw.strip():
+                        t = {"raw": raw, "narrated": _explain_thinking(raw.strip())}
+                        thoughts.append(t)
+                        slog.log_event({"type": "thought", **t})
+                    continue
+                if hasattr(part, "text") and part.text:
+                    full_response.append(part.text)
+                    slog.log_event({"type": "text", "text": part.text})
+
+        cards = await _get_current_cards(req.user_id, session.id)
+        for i, card in enumerate(cards):
+            slog.log_event({"type": "narrator_card", "card": card, "card_index": i})
+
+        slog.log_event({
+            "type": "done",
+            "text_len": sum(len(t) for t in full_response),
+            "thought_count": len(thoughts),
+            "step_count": len(tool_steps),
+            "card_count": len(cards),
+        })
+
+        return {
+            "response": "".join(full_response),
+            "thoughts": thoughts,
+            "tool_steps": tool_steps,
+            "narrator_cards": cards,
+        }
+    except Exception as e:
+        slog.log_error(str(e))
+        raise
+    finally:
+        slog.close()
+
+
+# ---------------------------------------------------------------------------
+# GET /chat/stream — SSE 流式（协议 v2）
+# ---------------------------------------------------------------------------
+@app.get("/chat/stream")
+async def chat_stream(message: str, user_id: str = "default_user"):
+    """
+    SSE 事件协议 v2（含响应缓存）：
+
+    | type          | 关键字段                                      | 前端用途                  |
+    |---------------|----------------------------------------------|--------------------------|
+    | text          | text (str)                                   | 打字机追加正文             |
+    | thought       | raw, narrated (str)                          | 可折叠思考卡片             |
+    | tool_step     | step_id, summary, calls[]                    | 新增工具步骤卡片           |
+    | tool_call     | step_id, call_id, status, result_summary     | 更新子调用状态             |
+    | narrator_card | card, card_index                             | 解说卡片（旧兼容）         |
+    | done          | text_len, thought_count, step_count          | 标记流结束                 |
+
+    缓存逻辑：对相同 full_message（含文件内容）的请求直接回放已缓存的事件流，跳过 LLM 调用。
+    """
+    session = await session_service.create_session(user_id=user_id, app_name=APP_NAME)
+    full_message = _build_message_with_files(message, user_id)
+
+    # 检查缓存命中 → 快速回放缓存事件，跳过 LLM 调用
+    cached_events = _sse_cache.get(full_message)
+    if cached_events is not None:
+        logger.info("SSE cache HIT: %.60s...", message)
+        slog = SessionLogger(session.id, user_id, message)
+        slog.log_event({"type": "cache_hit", "cached_event_count": len(cached_events)})
+
+        async def replay_generator():
+            try:
+                for evt in cached_events:
+                    slog.log_event(evt)
+                    yield _sse(evt)
+                    await asyncio.sleep(0.01)  # 小幅延迟，避免瞬间洪泛前端
+            except Exception as e:
+                slog.log_error(str(e))
+            finally:
+                slog.close()
+
+        return StreamingResponse(
+            replay_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+
+    logger.info("SSE cache MISS: %.60s...", message)
+    collected_events: list[dict] = []  # 缓存未命中，收集事件以便结束后写入缓存
+    slog = SessionLogger(session.id, user_id, message)
+
+    async def event_generator():
+        msg = types.Content(role="user", parts=[types.Part.from_text(text=full_message)])
+
+        last_card_count = 0
+        last_card_check = 0.0
+        thought_count = 0
+        step_count = 0
+        text_len = 0
+
+        # 追踪 function_call id → step_id 映射（用于 tool_call 更新事件）
+        call_id_to_step: dict[str, str] = {}
+        # 当前轮次待完成的 call ids
+        pending_calls: dict[str, str] = {}  # call_id → step_id
+
+        def emit(evt_data: dict):
+            """收集事件到缓存、写入日志并返回 SSE 帧。"""
+            collected_events.append(evt_data)
+            slog.log_event(evt_data)
+            return _sse(evt_data)
+
+        async for event in runner.run_async(
+            new_message=msg,
+            user_id=user_id,
+            session_id=session.id,
+            run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+        ):
+            if not event.content or not event.content.parts:
+                continue
+            if getattr(event, "partial", True) is False:
+                continue
+
+            # ---- 工具调用事件 ----
+            has_fc = any(
+                hasattr(p, "function_call") and p.function_call
+                or hasattr(p, "function_response") and p.function_response
+                for p in event.content.parts
+            )
+            if has_fc:
+                step_id = f"step_{step_count}"
+                calls_out = []
+                summary_parts = []
+
+                for part in event.content.parts:
+                    if hasattr(part, "thought") and part.thought:
+                        summary_parts.append((part.text or "").strip())
+                    elif hasattr(part, "text") and part.text:
+                        summary_parts.append(part.text.strip())
+                    elif hasattr(part, "function_call") and part.function_call:
+                        fc = part.function_call
+                        cid = fc.id or str(uuid.uuid4())[:8]
+                        call_entry = {
+                            "id": cid,
+                            "tool_name": fc.name,
+                            "display_name": _friendly_tool_name(fc.name),
+                            "args_summary": json.dumps(fc.args or {}, ensure_ascii=False),
+                            "status": "running",
+                            "result_summary": None,
+                        }
+                        calls_out.append(call_entry)
+                        pending_calls[cid] = step_id
+                    elif hasattr(part, "function_response") and part.function_response:
+                        fr = part.function_response
+                        rid = fr.id or ""
+                        result_raw = fr.response or {}
+                        result_str = json.dumps(result_raw, ensure_ascii=False)
+                        status = "error" if _is_error_result(result_raw) else "done"
+                        call_entry = {
+                            "id": rid,
+                            "tool_name": fr.name,
+                            "display_name": _friendly_tool_name(fr.name),
+                            "args_summary": "",
+                            "status": status,
+                            "result_summary": result_str,
+                        }
+                        calls_out.append(call_entry)
+                        # 如果之前有对应的 pending call，发送更新事件
+                        if rid in pending_calls:
+                            yield emit({
+                                "type": "tool_call",
+                                "step_id": pending_calls[rid],
+                                "call_id": rid,
+                                "status": status,
+                                "result_summary": result_str,
+                            })
+                            del pending_calls[rid]
+
+                if calls_out:
+                    summary = " ".join(summary_parts) or _friendly_tool_name(calls_out[0]["tool_name"])
+                    yield emit({
+                        "type": "tool_step",
+                        "step_id": step_id,
+                        "summary": summary,
+                        "call_count": len(calls_out),
+                        "calls": calls_out,
+                    })
+                    step_count += 1
+                continue
+
+            # ---- 思考 / 正文 ----
+            for part in event.content.parts:
+                if hasattr(part, "thought") and part.thought:
+                    raw_text = part.text or ""
+                    if raw_text.strip():
+                        thought_count += 1
+                        yield emit({
+                            "type": "thought",
+                            "raw": raw_text,
+                            "narrated": _explain_thinking(raw_text.strip()),
+                        })
+                    continue
+                if hasattr(part, "text") and part.text:
+                    text_len += len(part.text)
+                    yield emit({"type": "text", "text": part.text})
+
+            # ---- 解说卡片增量推送 ----
+            now = time.time()
+            if now - last_card_check >= 0.2:
+                current_cards = await _get_current_cards(user_id, session.id)
+                last_card_check = now
+                while last_card_count < len(current_cards):
+                    yield emit({
+                        "type": "narrator_card",
+                        "card": current_cards[last_card_count],
+                        "card_index": last_card_count,
+                    })
+                    last_card_count += 1
+
+        # ---- 最终卡片 & done ----
+        final_cards = await _get_current_cards(user_id, session.id)
+        while last_card_count < len(final_cards):
+            yield emit({"type": "narrator_card", "card": final_cards[last_card_count], "card_index": last_card_count})
+            last_card_count += 1
+
+        done_event = {
+            "type": "done",
+            "text_len": text_len,
+            "thought_count": thought_count,
+            "step_count": step_count,
+            "card_count": len(final_cards),
+        }
+        yield emit(done_event)
+
+        # 流结束：将收集到的事件写入缓存
+        if collected_events:
+            _sse_cache.set(full_message, collected_events)
+            logger.info("SSE cache SET (%d events): %.60s...", len(collected_events), message)
+
+        # 关闭 session 日志
+        slog.close()
+
+    async def safe_event_generator():
+        """包装 event_generator，确保异常时也能关闭日志。"""
+        try:
+            async for frame in event_generator():
+                yield frame
+        except Exception as e:
+            logger.error("Stream error: %s", e, exc_info=True)
+            slog.log_error(str(e))
+            slog.close()
+            raise
+
+    return StreamingResponse(
+        safe_event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+# ---------------------------------------------------------------------------
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=8585)
+    parser.add_argument("--host", default="0.0.0.0")
+    args = parser.parse_args()
+    import uvicorn
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,1022 @@
+import { useState, useRef, useEffect, useCallback, type ReactNode, type ChangeEvent, type DragEvent, type KeyboardEvent } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import {
+  ArrowUp,
+  Bot,
+  Brain,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Loader2,
+  Paperclip,
+  Search,
+  Square,
+  Terminal,
+  Trash2,
+  Upload,
+  User,
+  Wrench,
+  XCircle,
+} from 'lucide-react';
+import { streamChat, uploadFile, listUploads, clearUploads } from './api';
+
+// ─── 类型定义 ────────────────────────────────────────────────────────────────
+
+interface ToolCall {
+  id: string;
+  tool_name: string;
+  display_name: string;
+  args_summary: string;
+  status: 'running' | 'done' | 'error';
+  result_summary: string | null;
+}
+
+interface ToolStep {
+  step_id: string;
+  summary: string;
+  call_count: number;
+  calls: ToolCall[];
+}
+
+interface ThoughtItem {
+  raw: string;
+  narrated: string | null;
+}
+
+interface HistoryMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text?: string;
+  steps?: ToolStep[];
+  thoughts?: ThoughtItem[];
+  timeline?: TimelineItem[];
+}
+
+interface UploadedFile {
+  name: string;
+  size: number;
+  path: string;
+}
+
+// ─── 时序类型 ────────────────────────────────────────────────────────────────
+
+type TimelineItem =
+  | { kind: 'thought'; data: ThoughtItem }
+  | { kind: 'text'; text: string }
+  | { kind: 'tool'; step: ToolStep };
+
+// ─── 常量 ────────────────────────────────────────────────────────────────────
+
+const TYPING_CHARS = 3;
+const TYPING_INTERVAL = 12;
+
+// ─── 工具图标映射 ────────────────────────────────────────────────────────────
+
+function getToolIcon(toolName: string): ReactNode {
+  const map: Record<string, React.ReactNode> = {
+    medical_keyword_search: <Search className="w-4 h-4" />,
+    europe_pmc_fetch: <FileText className="w-4 h-4" />,
+    write_file: <FileText className="w-4 h-4" />,
+    read_file: <FileText className="w-4 h-4" />,
+    execute_command: <Terminal className="w-4 h-4" />,
+    load_skill: <Wrench className="w-4 h-4" />,
+    web_search: <Search className="w-4 h-4" />,
+  };
+  return map[toolName] || <Wrench className="w-4 h-4" />;
+}
+
+// ─── 示例问题 ─────────────────────────────────────────────────────────────────
+type ExampleQuestion = {
+  question: string;
+  demoFile?: string;  // 内置 demo 文件路径（public/ 下），点击时自动上传
+};
+
+const EXAMPLE_QUESTIONS: ExampleQuestion[] = [
+  { question: '耐赋康三期研究目标人群蛋白尿基线和泰它西普三期的对比' },
+  {
+    question: '根据上传的PPT，总结Etrasimod的主要临床研究设计和关键疗效数据',
+    demoFile: '/demo/Etrasimod.pptx',
+  },
+];
+
+// ─── 子组件 ──────────────────────────────────────────────────────────────────
+
+const Header = () => (
+  <header className="flex items-center gap-2 px-4 py-3 border-b border-slate-800 text-sm font-medium text-slate-300">
+    <Bot className="w-5 h-5 text-blue-400" />
+    <span className="font-semibold text-slate-200">云顶新耀</span>
+    <ChevronRight className="w-4 h-4 text-slate-500" />
+    <span className="text-slate-400">医学研究智能体</span>
+  </header>
+);
+
+function UserMessage({ text }: { text: string }) {
+  return (
+    <div className="flex justify-end gap-3 mb-6 w-full max-w-4xl mx-auto px-4">
+      <div className="bg-[#2563eb] text-white px-5 py-4 rounded-2xl rounded-tr-sm max-w-3xl leading-relaxed text-[15px] shadow-sm whitespace-pre-wrap">
+        {text}
+      </div>
+      <div className="flex-shrink-0 w-8 h-8 bg-purple-900/80 rounded-full flex items-center justify-center border border-purple-700/50">
+        <User className="w-5 h-5 text-purple-200" />
+      </div>
+    </div>
+  );
+}
+
+function SubCallRow({ call }: { call: ToolCall }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasArgs = call.args_summary && call.args_summary.length > 0;
+  const hasResult = call.result_summary && call.result_summary.length > 0;
+  const hasDetail = hasArgs || hasResult;
+
+  return (
+    <div className="py-1.5">
+      <div className="flex items-center gap-2 text-[13px]">
+        {call.status === 'running' ? (
+          <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin flex-shrink-0" />
+        ) : call.status === 'error' ? (
+          <XCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+        ) : (
+          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+        )}
+        <span className="text-slate-400">{getToolIcon(call.tool_name)}</span>
+        <span className="text-slate-300 font-medium">{call.display_name}</span>
+        <span
+          className={`px-1.5 py-0.5 rounded text-[11px] font-medium ${
+            call.status === 'running'
+              ? 'bg-amber-500/10 text-amber-400'
+              : call.status === 'error'
+                ? 'bg-red-500/10 text-red-400'
+                : 'bg-emerald-500/10 text-emerald-400'
+          }`}
+        >
+          {call.status === 'running' ? '执行中...' : call.status === 'error' ? '错误' : '完成'}
+        </span>
+        {hasDetail && (
+          <button
+            className="ml-auto text-[11px] text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-0.5"
+            onClick={() => setExpanded(!expanded)}
+          >
+            {expanded ? (
+              <>
+                <ChevronDown className="w-3 h-3" />
+                收起
+              </>
+            ) : (
+              <>
+                <ChevronRight className="w-3 h-3" />
+                查看详情
+              </>
+            )}
+          </button>
+        )}
+      </div>
+      {expanded && hasDetail && (
+        <div className="mt-2 ml-5.5 space-y-2">
+          {hasArgs && (
+            <div>
+              <div className="text-[11px] text-slate-500 mb-1 font-medium">输入参数</div>
+              <pre className="text-[12px] text-slate-400 bg-slate-900/50 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed max-h-80 overflow-y-auto">
+                {tryFormatJson(call.args_summary)}
+              </pre>
+            </div>
+          )}
+          {hasResult && (
+            <div>
+              <div className="text-[11px] text-slate-500 mb-1 font-medium">返回结果</div>
+              <pre className={`text-[12px] rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed max-h-80 overflow-y-auto ${
+                call.status === 'error'
+                  ? 'bg-red-950/30 text-red-300'
+                  : 'bg-slate-900/50 text-slate-400'
+              }`}>
+                {tryFormatJson(call.result_summary!)}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 尝试格式化 JSON 字符串，如果不是有效 JSON 则原样返回 */
+function tryFormatJson(text: string): string {
+  try {
+    const parsed = JSON.parse(text);
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return text;
+  }
+}
+
+function ToolStepCard({ step }: { step: ToolStep }) {
+  const [open, setOpen] = useState(true);
+  const hasRunning = step.calls.some((c) => c.status === 'running');
+
+  return (
+    <div className="bg-[#151b28] border border-slate-800/80 rounded-xl overflow-hidden">
+      <div
+        className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-slate-800/30 transition-colors"
+        onClick={() => setOpen(!open)}
+      >
+        <div className="flex items-center gap-3 text-[14px] text-slate-300">
+          {open ? (
+            <ChevronDown className="w-4 h-4 text-slate-500" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-slate-500" />
+          )}
+          {hasRunning ? (
+            <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
+          ) : (
+            getToolIcon(step.calls[0]?.tool_name || '')
+          )}
+          <span className="font-medium line-clamp-2">{step.summary}</span>
+        </div>
+        <div className="text-[13px] text-slate-500">{step.call_count} 次调用</div>
+      </div>
+      {open && step.calls.length > 0 && (
+        <div className="px-5 pb-3 pt-1">
+          <div className="border-l-2 border-slate-800/80 pl-4 py-1 space-y-1">
+            {step.calls.map((call) => (
+              <SubCallRow key={call.id} call={call} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThoughtCard({ thought }: { thought: ThoughtItem }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="inline-flex flex-col max-w-full">
+      <div
+        className="inline-flex items-center gap-2 px-4 py-2 bg-[#1e1b4b]/40 border border-indigo-500/30 rounded-lg text-indigo-300 text-[14px] font-medium cursor-pointer hover:bg-[#1e1b4b]/60 transition-colors w-max"
+        onClick={() => setOpen(!open)}
+      >
+        {open ? (
+          <ChevronDown className="w-4 h-4" />
+        ) : (
+          <ChevronRight className="w-4 h-4" />
+        )}
+        <Brain className="w-4 h-4" />
+        <span>思考过程</span>
+        {thought.narrated && (
+          <span className="text-[12px] text-indigo-400/70 truncate max-w-xs">
+            {thought.narrated}
+          </span>
+        )}
+      </div>
+      {open && (
+        <div className="mt-1 px-4 py-3 bg-[#1e1b4b]/20 border border-indigo-500/20 rounded-lg text-[13px] text-slate-400 leading-relaxed whitespace-pre-wrap max-w-2xl">
+          {thought.raw.replace(/\s+/g, ' ').trim()}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssistantMessage({ msg }: { msg: HistoryMessage }) {
+  const hasTools = msg.timeline?.some((t) => t.kind === 'tool');
+  let textIndex = 0;
+  const totalTexts = msg.timeline?.filter((t) => t.kind === 'text').length ?? 0;
+
+  return (
+    <div className="flex gap-4 w-full max-w-4xl mx-auto px-4 mb-6">
+      <div className="w-8 h-8 bg-[#1e293b] rounded-full flex items-center justify-center border border-slate-700/50 flex-shrink-0 mt-1">
+        <Bot className="w-4 h-4 text-blue-400" />
+      </div>
+      <div className="flex-1 flex flex-col gap-2 min-w-0">
+        {/* 优先按时序渲染 */}
+        {msg.timeline && msg.timeline.length > 0 ? (
+          msg.timeline.map((item, i) => {
+            if (item.kind === 'thought') {
+              return <ThoughtCard key={`t-${i}`} thought={item.data} />;
+            }
+            if (item.kind === 'text') {
+              textIndex++;
+              const isFinal = hasTools && textIndex === totalTexts;
+              return (
+                <div key={`tx-${i}`}>
+                  {isFinal && (
+                    <div className="flex items-center gap-2 mb-1.5 px-1">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      <span className="text-[13px] font-medium text-emerald-400">最终结果</span>
+                    </div>
+                  )}
+                  <div className="bg-[#151b28] border border-slate-800/80 rounded-xl p-6 text-[15px] text-slate-200 prose-invert">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        table: ({ children }) => (
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse">{children}</table>
+                          </div>
+                        ),
+                        thead: ({ children }) => (
+                          <thead className="border-b border-slate-700/60 text-slate-400 text-[14px]">
+                            {children}
+                          </thead>
+                        ),
+                        th: ({ children }) => (
+                          <th className="py-3 px-4 font-medium">{children}</th>
+                        ),
+                        td: ({ children }) => (
+                          <td className="py-3 px-4 text-slate-300 border-b border-slate-800/40">
+                            {children}
+                          </td>
+                        ),
+                        code: ({ children, className }) => {
+                          const isBlock = className?.includes('language-');
+                          if (isBlock) {
+                            return (
+                              <pre className="bg-[#0b0f19] border border-slate-800 rounded-lg p-4 overflow-x-auto text-[13px]">
+                                <code>{children}</code>
+                              </pre>
+                            );
+                          }
+                          return (
+                            <code className="bg-[#1e293b] text-blue-300 px-2 py-0.5 rounded text-[13px] border border-slate-700/50">
+                              {children}
+                            </code>
+                          );
+                        },
+                        a: ({ children, href }) => (
+                          <a
+                            href={href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-400 hover:text-blue-300 underline"
+                          >
+                            {children}
+                          </a>
+                        ),
+                        p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
+                        ul: ({ children }) => (
+                          <ul className="list-disc pl-5 space-y-1 mb-3">{children}</ul>
+                        ),
+                        ol: ({ children }) => (
+                          <ol className="list-decimal pl-5 space-y-1 mb-3">{children}</ol>
+                        ),
+                        strong: ({ children }) => (
+                          <strong className="text-slate-100 font-bold">{children}</strong>
+                        ),
+                      }}
+                    >
+                      {item.text}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              );
+            }
+            // item.kind === 'tool'
+            return <ToolStepCard key={`s-${item.step.step_id}`} step={item.step} />;
+          })
+        ) : (
+          /* 旧消息兼容：没有 timeline 时按旧顺序渲染 */
+          <>
+            {msg.steps?.map((step) => (
+              <ToolStepCard key={step.step_id} step={step} />
+            ))}
+            {msg.thoughts?.map((t, i) => (
+              <ThoughtCard key={i} thought={t} />
+            ))}
+            {msg.text && (
+              <div className="bg-[#151b28] border border-slate-800/80 rounded-xl p-6 text-[15px] text-slate-200 prose-invert">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LiveAgentRow({
+  timeline,
+  displayedText,
+  isStreaming,
+}: {
+  timeline: TimelineItem[];
+  displayedText: string;
+  isStreaming: boolean;
+}) {
+  const hasRunningTool = timeline.some(
+    (t) => t.kind === 'tool' && t.step.calls.some((c) => c.status === 'running'),
+  );
+  const lastItem = timeline[timeline.length - 1];
+  const lastWasThought = lastItem?.kind === 'thought';
+
+  // 根据当前阶段显示更精确的状态
+  const getStatusText = () => {
+    if (hasRunningTool) return '工具执行中...';
+    if (lastWasThought) return '思考中...';
+    if (timeline.length === 0) return '思考中...';
+    // 工具执行完毕后，等待下一阶段（生成回答或继续思考）
+    return '分析结果中...';
+  };
+
+  return (
+    <div className="flex gap-4 w-full max-w-4xl mx-auto px-4 mb-6">
+      <div className="w-8 h-8 bg-[#1e293b] rounded-full flex items-center justify-center border border-slate-700/50 flex-shrink-0 mt-1">
+        <Bot className="w-4 h-4 text-blue-400" />
+      </div>
+      <div className="flex-1 flex flex-col gap-2 min-w-0">
+        {/* 时序渲染已刷入的内容 */}
+        {timeline.map((item, i) => {
+          if (item.kind === 'thought') {
+            return <ThoughtCard key={`t-${i}`} thought={item.data} />;
+          }
+          if (item.kind === 'text') {
+            return (
+              <div
+                key={`tx-${i}`}
+                className="bg-[#151b28] border border-slate-800/80 rounded-xl p-6 text-[15px] text-slate-200"
+              >
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text}</ReactMarkdown>
+              </div>
+            );
+          }
+          return <ToolStepCard key={`s-${item.step.step_id}`} step={item.step} />;
+        })}
+
+        {/* 状态指示：流式中且还没有正在显示的文本 */}
+        {isStreaming && !displayedText && (
+          <div className="flex items-center gap-2 px-4 py-3 bg-[#151b28] border border-slate-800/80 rounded-xl text-[14px] text-slate-400">
+            <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
+            {getStatusText()}
+          </div>
+        )}
+
+        {/* 正在流式输出的文字（还未刷入 timeline） */}
+        {displayedText && (
+          <div className="bg-[#151b28] border border-slate-800/80 rounded-xl p-6 text-[15px] text-slate-200">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayedText}</ReactMarkdown>
+            {isStreaming && (
+              <span className="inline-block w-0.5 h-4 bg-blue-500 ml-0.5 animate-pulse align-text-bottom" />
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── 主组件 ──────────────────────────────────────────────────────────────────
+
+export default function App() {
+  const [messages, setMessages] = useState<HistoryMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [isStreaming, setIsStreaming] = useState(false);
+
+  // 流式中间状态
+  const [liveSteps, setLiveSteps] = useState<ToolStep[]>([]);
+  const [liveThoughts, setLiveThoughts] = useState<ThoughtItem[]>([]);
+  const [liveTimeline, setLiveTimeline] = useState<TimelineItem[]>([]);
+  const [displayedText, setDisplayedText] = useState('');
+  const targetTextRef = useRef('');
+  const textBufferRef = useRef('');
+  const timelineRef = useRef<TimelineItem[]>([]);
+  const typingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // 文件上传
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // 加载已有文件
+  useEffect(() => {
+    listUploads()
+      .then((data) => {
+        if (data.files) setUploadedFiles(data.files);
+      })
+      .catch(() => {});
+  }, []);
+
+  // 自动滚底
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, displayedText, liveSteps, liveTimeline]);
+
+  // 打字机效果
+  const startTyping = useCallback(() => {
+    if (typingTimerRef.current) return;
+    typingTimerRef.current = setInterval(() => {
+      setDisplayedText((prev) => {
+        const target = targetTextRef.current;
+        if (prev.length >= target.length) return prev;
+        return target.slice(0, prev.length + TYPING_CHARS);
+      });
+    }, TYPING_INTERVAL);
+  }, []);
+
+  const stopTyping = useCallback(() => {
+    if (typingTimerRef.current) {
+      clearInterval(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
+    setDisplayedText(targetTextRef.current);
+  }, []);
+
+  // ─── 文件上传 ──────────────────────────────────────────────────────────
+
+  const doUpload = useCallback(async (file: File) => {
+    setUploading(true);
+    try {
+      const result = await uploadFile(file);
+      if (result.success) {
+        setUploadedFiles((prev) => [
+          ...prev,
+          { name: result.filename, size: result.size, path: result.path || '' },
+        ]);
+      }
+    } catch (err) {
+      console.error('Upload failed:', err);
+    } finally {
+      setUploading(false);
+    }
+  }, []);
+
+  const handleFileSelect = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) doUpload(file);
+      e.target.value = '';
+    },
+    [doUpload],
+  );
+
+  // ─── 示例问题点击 ──────────────────────────────────────────────────────
+
+  const handleClickExample = useCallback(
+    async (ex: ExampleQuestion) => {
+      if (ex.demoFile && !isStreaming) {
+        // 自动上传内置 demo 文件
+        setUploading(true);
+        try {
+          const resp = await fetch(ex.demoFile);
+          const blob = await resp.blob();
+          const fileName = ex.demoFile.split('/').pop()!;
+          const file = new File([blob], fileName, { type: blob.type });
+          await doUpload(file);
+        } catch (err) {
+          console.error('Demo file upload failed:', err);
+        } finally {
+          setUploading(false);
+        }
+      }
+      setInput(ex.question);
+    },
+    [doUpload, isStreaming],
+  );
+
+  const handleDrop = useCallback(
+    (e: DragEvent) => {
+      e.preventDefault();
+      setIsDragging(false);
+      const file = e.dataTransfer.files?.[0];
+      if (file) doUpload(file);
+    },
+    [doUpload],
+  );
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
+  const handleClearFiles = useCallback(async () => {
+    try {
+      await clearUploads();
+      setUploadedFiles([]);
+    } catch (err) {
+      console.error('Clear failed:', err);
+    }
+  }, []);
+
+  const handleRemoveFile = useCallback(
+    async (fileName: string) => {
+      setUploadedFiles((prev) => prev.filter((f) => f.name !== fileName));
+      await handleClearFiles();
+    },
+    [handleClearFiles],
+  );
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  };
+
+  // ─── 发送消息 ──────────────────────────────────────────────────────────
+
+  const sendMessage = useCallback(async () => {
+    const text = input.trim();
+    if (!text || isStreaming) return;
+    setInput('');
+    setIsStreaming(true);
+
+    // 文件提示
+    let fileHint = '';
+    if (uploadedFiles.length > 0) {
+      fileHint = '\n\n[已上传文件: ' + uploadedFiles.map((f) => f.name).join(', ') + ']';
+    }
+
+    // 追加用户消息
+    const userMsg: HistoryMessage = {
+      id: `user_${Date.now()}`,
+      role: 'user',
+      text: text + fileHint,
+    };
+    setMessages((prev) => [...prev, userMsg]);
+
+    // 重置流式状态
+    targetTextRef.current = '';
+    textBufferRef.current = '';
+    timelineRef.current = [];
+    setDisplayedText('');
+    setLiveSteps([]);
+    setLiveThoughts([]);
+    setLiveTimeline([]);
+
+    const collectedSteps: ToolStep[] = [];
+    const collectedThoughts: ThoughtItem[] = [];
+    const ac = new AbortController();
+    abortRef.current = ac;
+
+    // 将累积的文字刷入 timeline
+    const flushText = () => {
+      if (textBufferRef.current) {
+        const item: TimelineItem = { kind: 'text', text: textBufferRef.current };
+        timelineRef.current.push(item);
+        setLiveTimeline([...timelineRef.current]);
+        textBufferRef.current = '';
+      }
+      // 重置打字机状态 — 已刷入的文字由 timeline 渲染，避免重复显示
+      targetTextRef.current = '';
+      setDisplayedText('');
+    };
+
+    try {
+      for await (const evt of streamChat(text, 'default_user', ac.signal)) {
+        switch (evt.type) {
+          case 'text': {
+            const chunk = evt.text as string;
+            targetTextRef.current += chunk;
+            textBufferRef.current += chunk;
+            startTyping();
+            break;
+          }
+
+          case 'thought': {
+            // 先刷出累积的文字到 timeline
+            flushText();
+            const rawChunk = evt.raw as string;
+            const narrated = (evt.narrated as string) || null;
+
+            // 检查 timeline 最后一项是否是 thought —— 只有连续的 thought 才合并
+            const lastTlItem = timelineRef.current[timelineRef.current.length - 1];
+            const shouldMerge = lastTlItem?.kind === 'thought';
+
+            if (shouldMerge) {
+              // 合并到最后一个 thought（连续的思考 chunk 归入同一张卡片）
+              const last = collectedThoughts[collectedThoughts.length - 1];
+              // 直接拼接 — 模型 token 自带正确的空格（如 " user"、" wants"）
+              last.raw += rawChunk;
+              if (narrated) last.narrated = narrated;
+              setLiveThoughts([...collectedThoughts]);
+              // 更新 timeline 末尾的 thought 项
+              timelineRef.current[timelineRef.current.length - 1] =
+                { kind: 'thought', data: { ...last } };
+              setLiveTimeline([...timelineRef.current]);
+            } else {
+              // 新建 thought（之前是 text / tool / 空 → 开始一段新的思考）
+              const t: ThoughtItem = { raw: rawChunk, narrated };
+              collectedThoughts.push(t);
+              setLiveThoughts([...collectedThoughts]);
+              const item: TimelineItem = { kind: 'thought', data: t };
+              timelineRef.current.push(item);
+              setLiveTimeline([...timelineRef.current]);
+            }
+            break;
+          }
+
+          case 'tool_step': {
+            // 先刷出文字到 timeline
+            flushText();
+            const step: ToolStep = {
+              step_id: evt.step_id as string,
+              summary: evt.summary as string,
+              call_count: evt.call_count as number,
+              calls: (evt.calls as ToolCall[]) || [],
+            };
+            collectedSteps.push(step);
+            setLiveSteps((prev) => [...prev, step]);
+            // 添加到 timeline
+            const toolItem: TimelineItem = { kind: 'tool', step };
+            timelineRef.current.push(toolItem);
+            setLiveTimeline([...timelineRef.current]);
+            break;
+          }
+
+          case 'tool_call': {
+            const step_id = evt.step_id as string;
+            const call_id = evt.call_id as string;
+            const status = evt.status as 'done' | 'error';
+            const result_summary = evt.result_summary as string;
+            const updateCall = (steps: ToolStep[]) =>
+              steps.map((s) =>
+                s.step_id !== step_id
+                  ? s
+                  : {
+                      ...s,
+                      calls: s.calls.map((c) =>
+                        c.id === call_id ? { ...c, status, result_summary } : c,
+                      ),
+                    },
+              );
+            setLiveSteps((prev) => updateCall(prev));
+            const idx = collectedSteps.findIndex((s) => s.step_id === step_id);
+            if (idx >= 0) collectedSteps[idx] = updateCall([collectedSteps[idx]])[0];
+            // 同步更新 timeline 中的工具步骤
+            const tl = timelineRef.current.map((item) => {
+              if (item.kind === 'tool' && item.step.step_id === step_id) {
+                const updated = updateCall([item.step])[0];
+                return { ...item, step: updated } as TimelineItem;
+              }
+              return item;
+            });
+            timelineRef.current = tl;
+            setLiveTimeline(tl);
+            break;
+          }
+
+          case 'done': {
+            stopTyping();
+            const finalText = targetTextRef.current;
+            // 将最后的文字刷入 timeline
+            flushText();
+            const finalTimeline = [...timelineRef.current];
+
+            const assistantMsg: HistoryMessage = {
+              id: `assistant_${Date.now()}`,
+              role: 'assistant',
+              text: finalText || undefined,
+              steps: collectedSteps.length > 0 ? [...collectedSteps] : undefined,
+              thoughts: collectedThoughts.length > 0 ? [...collectedThoughts] : undefined,
+              timeline: finalTimeline.length > 0 ? finalTimeline : undefined,
+            };
+            setMessages((prev) => [...prev, assistantMsg]);
+
+            targetTextRef.current = '';
+            textBufferRef.current = '';
+            timelineRef.current = [];
+            setDisplayedText('');
+            setLiveSteps([]);
+            setLiveThoughts([]);
+            setLiveTimeline([]);
+            setIsStreaming(false);
+            break;
+          }
+        }
+      }
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // 用户手动停止
+        stopTyping();
+        flushText();
+        if (targetTextRef.current || collectedSteps.length > 0 || collectedThoughts.length > 0) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `assistant_${Date.now()}`,
+              role: 'assistant',
+              text: targetTextRef.current || undefined,
+              steps: collectedSteps.length > 0 ? [...collectedSteps] : undefined,
+              thoughts: collectedThoughts.length > 0 ? [...collectedThoughts] : undefined,
+              timeline: timelineRef.current.length > 0 ? [...timelineRef.current] : undefined,
+            },
+          ]);
+        }
+      } else {
+        console.error('SSE error:', err);
+        stopTyping();
+        const errMsg = err instanceof Error ? err.message : '未知错误';
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `error_${Date.now()}`,
+            role: 'assistant',
+            text: `请求失败: ${errMsg}`,
+          },
+        ]);
+      }
+    } finally {
+      setIsStreaming(false);
+      abortRef.current = null;
+      textBufferRef.current = '';
+      timelineRef.current = [];
+      setLiveTimeline([]);
+    }
+  }, [input, isStreaming, uploadedFiles, startTyping, stopTyping]);
+
+  const handleStop = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.nativeEvent.isComposing) return;
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    },
+    [sendMessage],
+  );
+
+  // 自动调整 textarea 高度
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (ta) {
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight, 128) + 'px';
+    }
+  }, [input]);
+
+  return (
+    <div className="h-screen flex flex-col bg-[#0b0f19] font-sans selection:bg-blue-500/30">
+      <Header />
+
+      <main className="flex-1 overflow-y-auto py-6">
+        {/* 欢迎消息 */}
+        {messages.length === 0 && !isStreaming && (
+          <div className="flex flex-col items-center justify-center h-full text-center px-4">
+            <Bot className="w-12 h-12 text-blue-400/50 mb-4" />
+            <h2 className="text-xl font-semibold text-slate-300 mb-2">云顶新耀 医学研究智能体</h2>
+            <p className="text-slate-500 text-sm max-w-md mb-8">
+              医学文献检索 · 临床研究分析 · 药物对比研究
+            </p>
+            <div className="flex flex-wrap justify-center gap-2 max-w-2xl">
+              {EXAMPLE_QUESTIONS.map((ex, i) => (
+                <button
+                  key={i}
+                  className={`group flex items-center gap-2 px-4 py-2.5 text-[13px] rounded-xl transition-colors text-left leading-snug ${
+                    ex.demoFile
+                      ? 'text-amber-400/80 bg-amber-500/5 border border-amber-500/20 hover:bg-amber-500/10 hover:text-amber-300 hover:border-amber-500/30'
+                      : 'text-slate-400 bg-slate-800/60 border border-slate-700/50 hover:bg-slate-700/60 hover:text-slate-300 hover:border-slate-600/60'
+                  }`}
+                  onClick={() => handleClickExample(ex)}
+                  disabled={isStreaming || uploading}
+                >
+                  {ex.demoFile && (
+                    <FileText className="w-3.5 h-3.5 shrink-0 text-amber-400/60 group-hover:text-amber-400/80" />
+                  )}
+                  <span>{ex.question}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 历史消息 */}
+        {messages.map((msg) =>
+          msg.role === 'user' ? (
+            <UserMessage key={msg.id} text={msg.text || ''} />
+          ) : (
+            <AssistantMessage key={msg.id} msg={msg} />
+          ),
+        )}
+
+        {/* 流式实时渲染 */}
+        {isStreaming && (
+          <LiveAgentRow
+            timeline={liveTimeline}
+            displayedText={displayedText}
+            isStreaming={isStreaming}
+          />
+        )}
+
+        <div ref={messagesEndRef} />
+      </main>
+
+      {/* 已上传文件栏 */}
+      {uploadedFiles.length > 0 && (
+        <div className="w-full max-w-4xl mx-auto px-4 pb-2">
+          <div className="flex flex-wrap items-center gap-1.5 py-2">
+            {uploadedFiles.map((f, i) => (
+              <span
+                key={i}
+                className="inline-flex items-center gap-1 bg-slate-800 text-slate-300 px-2 py-1 rounded-lg text-[12px] border border-slate-700/50"
+                title={f.path}
+              >
+                <Paperclip className="w-3 h-3 text-slate-500" />
+                {f.name} ({formatSize(f.size)})
+                <button
+                  className="text-slate-500 hover:text-red-400 ml-0.5"
+                  onClick={() => handleRemoveFile(f.name)}
+                >
+                  <XCircle className="w-3 h-3" />
+                </button>
+              </span>
+            ))}
+            <button
+              className="text-slate-500 hover:text-red-400 text-[12px] flex items-center gap-1 px-1.5"
+              onClick={handleClearFiles}
+            >
+              <Trash2 className="w-3 h-3" />
+              清除全部
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 文件拖拽区域 */}
+      <div
+        className={`w-full max-w-4xl mx-auto px-4 transition-opacity ${
+          isDragging ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        }`}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+      >
+        <div className="border-2 border-dashed border-blue-500/50 rounded-xl py-3 text-center text-[13px] text-blue-400 bg-blue-500/5 mb-2">
+          {uploading ? '上传中...' : '松开鼠标上传文件'}
+        </div>
+      </div>
+
+      {/* 输入区域 */}
+      <div className="w-full max-w-4xl mx-auto px-4 pb-6 pt-2 shrink-0">
+        <div
+          className={`bg-[#151b28] border rounded-2xl flex items-end p-2 transition-colors shadow-lg shadow-black/20 ${
+            isDragging ? 'border-blue-500/60' : 'border-slate-700/60 focus-within:border-slate-500/60'
+          }`}
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+        >
+          <button
+            className="p-3 text-slate-400 hover:text-slate-300 hover:bg-slate-800/50 rounded-xl transition-colors mb-0.5"
+            onClick={() => fileInputRef.current?.click()}
+            title="上传文件"
+          >
+            {uploading ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <Upload className="w-5 h-5" />
+            )}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            onChange={handleFileSelect}
+            className="hidden"
+          />
+          <textarea
+            ref={textareaRef}
+            rows={1}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={isStreaming}
+            placeholder={isStreaming ? 'AI 正在思考...' : '输入你的医学问题...'}
+            className="flex-1 bg-transparent text-[15px] text-slate-200 placeholder:text-slate-500 resize-none outline-none py-3 px-3 max-h-32 min-h-[44px] disabled:opacity-50"
+          />
+          {isStreaming ? (
+            <button
+              className="p-2.5 m-0.5 bg-red-600 hover:bg-red-500 text-white rounded-xl transition-colors shrink-0"
+              onClick={handleStop}
+              title="停止"
+            >
+              <Square className="w-5 h-5" />
+            </button>
+          ) : (
+            <button
+              className="p-2.5 m-0.5 bg-[#2563eb] hover:bg-blue-600 text-white rounded-xl transition-colors shrink-0 disabled:opacity-40"
+              onClick={sendMessage}
+              disabled={!input.trim()}
+            >
+              <ArrowUp className="w-5 h-5" />
+            </button>
+          )}
+        </div>
+        <div className="text-center mt-3 text-[12px] text-slate-500">
+          内容由 AI 生成，请仔细甄别。
+        </div>
+      </div>
+    </div>
+  );
+}

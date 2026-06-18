@@ -1,439 +1,469 @@
-# 技能过程解说 Agent
+# 云顶新耀 · 医学研究智能体
 
-基于 Google ADK 构建的智能体，执行长时间运行的技能任务（数据分析、研究综合），并通过**旁路解说者架构**将 Agent 的工具调用、思考过程与正文回复分离，以不同类型的输出推送给前端，让普通用户也能看懂 AI 在"幕后"做了什么。
-
----
-
-## 核心问题
-
-当 Agent 执行复杂的多步骤技能时，会产生大量**普通用户看不懂**的中间过程：
-
-```
-❌ 用户不应该看到这些：
-   → 调用 load_skill(skill_name="data-analysis")
-   → thought: "I need to first load the skill instructions, then..."
-   → 调用 load_skill_resource(resource_path="references/analysis-methods.md")
-   → thought: "Step 3 requires statistical modeling, let me consider..."
-   → run_command(cmd="python analyze.py --input data.csv")
-```
-
-这些技术细节对用户毫无意义，甚至会造成困惑。本项目通过**旁路解说 Agent** 将这些内容翻译成普通用户能理解的解说卡片。
+基于 Google ADK + DeepSeek 构建的医学研究智能体，支持**文献检索、网页搜索、文件上传问答**，并通过**旁路解说架构**将 Agent 的工具调用与思考过程翻译为通俗易懂的中文卡片，让非技术用户也能理解 AI 的分析过程。
 
 ---
 
-## 解决方案：分层输出架构
+## 功能概览
 
-我们将 Agent 产生的所有内容按类型分成 **三个独立通道**，分别输出给前端：
+| 功能 | 说明 |
+|------|------|
+| **医学文献检索** | 接入 InfoX-Med API，支持中文指南、英文指南、系统评价/Meta 分析、RCT 四大类并行检索 |
+| **网页搜索** | 自建 SearXNG 实例，支持通用/新闻/图片/视频搜索，自动重试与诊断 |
+| **文件上传问答** | 支持 PDF、PPTX、PPT、TXT 文件上传，自动提取内容并带位置标记（`[第X页]`、`[幻灯片X]`）注入 LLM 上下文 |
+| **旁路解说** | 工具调用和思考过程被翻译为友好的中文卡片，实时推送给前端 |
+| **SSE 流式输出** | 6 种事件类型实时推送，前端逐字打字机效果展示 |
+| **SSE 响应缓存** | 相同问题秒级回放缓存结果（持久化到 `cache/` 目录，TTL 24h、LRU 淘汰） |
+| **会话日志** | 每轮对话完整记录到 JSONL 文件，含事件历史、耗时、元数据 |
+| **管理端** | 独立管理面板：Agent 配置编辑与版本回滚、技能管理、日志分析、LLM 智能优化建议 |
+
+---
+
+## 效果演示
+
+> 以下为实际查询的真实返回结果，展示智能体的完整工作流程。
+
+**查询**：蛋白尿在 IgA 肾病中的临床意义及治疗进展
+
+### 思考过程（旁路解说翻译后）
+
+```
+🧠 根据研究问题制定检索策略
+🧠 分析主要疗效终点和研究结局
+```
+
+### 工具调用过程（12 张解说卡片）
+
+```
+[1]  📖 加载技能指导 …
+       读取医学检索技能的详细分步指导
+
+[2]  📖 加载技能指导 - 完成 ✓
+       返回结构化数据，包含 3 个字段: skill_name, instructions, frontmatter
+
+[3]  📖 加载技能指导 …
+       读取医学检索技能的详细分步指导
+
+[4]  📖 加载技能指导 - 完成 ✓
+       返回结构化数据，包含 3 个字段: skill_name, instructions, frontmatter
+
+[5]  🔧 执行检索脚本 …
+       正在执行 run_skill_script
+
+[6]  🔧 执行检索脚本 …
+       正在执行 run_skill_script
+
+[7]  🔧 执行检索脚本 …
+       正在执行 run_skill_script
+
+[8]  🔧 执行检索脚本 …
+       正在执行 run_skill_script
+
+[9]  🔧 执行检索脚本 - 完成 ✓
+       脚本执行成功，stdout 输出 32,911 字符
+
+[10] 🔧 执行检索脚本 - 完成 ✓
+       脚本执行成功，stdout 输出 125,529 字符
+
+[11] 🔧 执行检索脚本 - 完成 ✓
+       脚本执行成功，stdout 输出 66,307 字符
+
+[12] 🔧 执行检索脚本 - 完成 ✓
+       脚本执行成功，stdout 输出 5,896 字符
+```
+
+### 检索策略（智能体自动制定）
+
+| 检索维度 | 工具 | 检索内容 |
+|----------|------|----------|
+| 综合文献 | medical-keyword-search (all) | IgA 肾病 + 蛋白尿临床意义 |
+| RCT 文献 | medical-keyword-search (rct) | IgA 肾病蛋白尿治疗临床试验 |
+| 系统评价 | medical-keyword-search (systematic-meta) | IgA 肾病蛋白尿 Meta 分析 |
+| 最新进展 | searxng (news) | IgA 肾病蛋白尿新药进展 |
+
+### 回答正文（节选）
+
+> #### 蛋白尿的预后预测价值
+>
+> 蛋白尿是 IgA 肾病中最重要、研究最充分的风险分层指标之一。2026 年发表的一项系统评价纳入了 21 项研究（共 13,006 例 IgAN 患者），结果一致表明：**蛋白尿水平越低，肾脏结局越好**，且明确证实蛋白尿 <0.5 g/d 的患者肾脏预后显著优于更高蛋白尿阈值的患者。
+>
+> #### KDIGO 2025 指南的里程碑式更新
+>
+> | 关键更新 | KDIGO 2021 | KDIGO 2025 |
+> |----------|------------|------------|
+> | 蛋白尿控制目标 | <1.0 g/d | **<0.5 g/d（理想 <0.3 g/d）** |
+> | 治疗框架 | 单一维度 | **双通路：①抑制致病性 IgA 产生 + ②管理肾单位丢失后果** |
+> | 疾病修饰治疗 | — | Nefecon、减量全身糖皮质激素、中国患者可用 MMF |
+>
+> #### 关键 III 期临床试验一览
+>
+> | 药物 | 机制 | 试验名称 | 期刊 / IF | 蛋白尿降低 vs 安慰剂 |
+> |------|------|----------|-----------|---------------------|
+> | **Nefecon** | 肠道黏膜免疫调节 | NefIgArd | Lancet / 88.5 | 9 个月治疗后持续降低 |
+> | **Sparsentan** | 双重内皮素/血管紧张素受体拮抗剂 | PROTECT | Lancet / 88.5 | -49.8% vs -15.1%（36 周） |
+> | **Atrasentan** | 选择性 ETA 受体拮抗剂 | ALIGN | NEJM / 78.5 | **-38.1% vs -3.1%（36 周）** |
+> | **Iptacopan** | 补体 B 因子抑制剂 | APPLAUSE-IgAN | NEJM / 78.5 | 9 个月 UPCR 降低 **38.3%** |
+
+**流结束统计**：正文 12,239 字符 · 2 个工具步骤（含 8 次子调用）· 12 张解说卡片
+
+---
+
+## 架构设计
 
 ```
 用户提问
     │
     ▼
 ┌──────────────────────────────────────────────────────┐
-│                    主 Agent                           │
-│         （执行技能、调用工具、深度思考）                  │
+│                  主 Agent (DeepSeek)                   │
+│     （医学文献检索、网页搜索、文件分析、深度思考）          │
 └──────────┬──────────────┬──────────────┬─────────────┘
            │              │              │
      ┌─────▼─────┐  ┌────▼─────┐  ┌─────▼─────┐
      │ 正文回复   │  │ 思考过程  │  │ 工具调用   │
-     │ (text)    │  │(thought) │  │ (tool)    │
+     │ (text)    │  │(thought) │  │(tool_step)│
      └─────┬─────┘  └────┬─────┘  └─────┬─────┘
            │              │              │
            │        ┌─────▼─────┐  ┌─────▼──────┐
            │        │ 旁路解说   │  │ 旁路解说    │
-           │        │ Agent     │  │ Agent      │
            │        │ 翻译思考   │  │ 翻译工具    │
            │        └─────┬─────┘  └─────┬──────┘
            │              │              │
            ▼              ▼              ▼
      ┌─────────┐  ┌────────────┐  ┌────────────┐
-     │ 最终答案 │  │ 🧠 思考卡片 │  │ 📖 工具卡片 │
-     │ 直接展示 │  │ "正在按照   │  │ "正在加载   │
-     │ 给用户   │  │  方法论逐步  │  │  数据分析的 │
-     │         │  │  推进分析"   │  │  专业指导"  │
+     │ 最终答案 │  │ 🧠 思考卡片 │  │ 🔬 工具卡片 │
+     │ 流式展示 │  │ 通俗中文    │  │ 友好标签    │
+     │ 给用户   │  │ 解说       │  │ 进度展示    │
      └─────────┘  └────────────┘  └────────────┘
+           │              │              │
+           └──────────────┼──────────────┘
+                          ▼
+                   SSE 流式推送 → React 前端
 ```
 
-### 三种输出类型
+### 旁路解说：三个回调钩子
 
-| 输出类型 | SSE 中的标识 | 前端展示方式 | 说明 |
-|---------|-------------|------------|------|
-| **正文回复** | `type: "text"` | 实时流式展示，作为主内容 | Agent 给用户的最终答案 |
-| **思考过程** | `type: "thought"` | 折叠面板 / 侧边栏，经旁路解说翻译后展示 | 原始思考内容被翻译为通俗中文 |
-| **工具调用** | `type: "narrator_card"` | 步骤时间线 / 进度条 | 技术工具名被翻译为友好标签 |
+| 回调 | 触发时机 | 作用 |
+|------|---------|------|
+| `before_tool_callback` | 工具执行前 | 告诉用户"即将做什么"（`status: "running"`） |
+| `after_tool_callback` | 工具执行后 | 告诉用户"做了什么，结果如何"（`status: "done"`） |
+| `after_model_callback` | LLM 每次响应后 | 将思考过程翻译为通俗说明 |
+
+**设计原则**：解说只翻译过程，绝不触碰正文输出；解说失败静默捕获，绝不影响主 Agent。
 
 ---
 
-## 旁路解说 Agent 的工作原理
-
-### 问题：工具名对用户不友好
-
-Agent 内部使用的工具名是技术性的，普通用户完全看不懂：
-
-| 原始工具名 | 用户看到的 | 用户理解吗？ |
-|-----------|-----------|------------|
-| `load_skill` | 加载技能指导 | ✅ 经过翻译 |
-| `load_skill_resource` | 加载参考资料 | ✅ 经过翻译 |
-| `list_skills` | 查看可用技能 | ✅ 经过翻译 |
-| `run_command` | 执行系统命令 | ✅ 经过翻译 |
-| `search_web` | 搜索信息 | ✅ 经过翻译 |
-
-**如果不翻译**，用户看到的是：`调用 load_skill_resource(resource_path="references/analysis-methods.md")` — 这毫无意义。
-
-### 解决方案：工具标签映射
-
-旁路解说模块维护了一张 **工具名 → 友好标签** 的映射表（`narrator.py` 中的 `TOOL_LABELS`）：
-
-```python
-TOOL_LABELS = {
-    "load_skill": {
-        "label": "加载技能指导",        # 用户看到的标题
-        "icon": "📖",                  # 配套图标
-        "detail": "读取该技能的详细分步指导，了解正确的执行方法",  # 详细说明
-    },
-    "load_skill_resource": {
-        "label": "加载参考资料",
-        "icon": "📚",
-        "detail": "查阅深度参考文档，确保分析质量和准确性",
-    },
-    # ... 更多映射
-}
-```
-
-对于未预定义的工具名，还支持 **子串模式匹配**（以 `_` 开头的键）：
-
-```python
-"_search":   → "搜索信息" 🔍
-"_load":     → "加载数据" 📂
-"_generate": → "生成输出" ⚙️
-"_validate": → "验证结果" ✅
-"_analyze":  → "分析数据" 📊
-```
-
-最终兜底：将 `tool_name` 转为可读文本，如 `run_command` → `Run Command`。
-
-### 问题：思考过程对用户不友好
-
-Agent 的思考（thought）是原始的推理文本，通常包含：
+## 项目结构
 
 ```
-❌ 原始思考（英文、技术化、冗长）：
-"I need to first load the data analysis skill instructions, then
- check if there are reference materials available. Step 1 requires
- understanding the data structure before any cleaning..."
-
-❌ 用户看到后的反应：这说了什么？跟我的问题有什么关系？
-```
-
-### 解决方案：思考模式匹配
-
-旁路解说模块通过 **正则表达式模式匹配**（`THINKING_PATTERNS`）将原始思考翻译为简短的中文说明：
-
-| 原始思考中的模式 | 翻译后的用户友好说明 |
-|----------------|-------------------|
-| `step 1`, `第一步`, `step 2` | "按照结构化方法论，逐步推进分析" |
-| `need to verify`, `需要验证` | "正在验证信息，确保后续步骤的准确性" |
-| `let me think`, `让我考虑` | "仔细思考问题，确保分析全面深入" |
-| `first load`, `首先获取` | "先从收集必要的信息开始" |
-| `summarize`, `总结`, `归纳` | "将多方面的信息整合成清晰的结论" |
-| `edge case`, `边界情况` | "排查边缘情况和特殊情况，确保分析的鲁棒性" |
-| `confident`, `confidence`, `unsure` | "评估分析结论的可信度" |
-| `compare`, `cross.reference`, `交叉验证` | "交叉对比不同来源的信息，确保准确性" |
-| `conclusion`, `结论`, `总结` | "基于前面的分析得出最终结论" |
-
-> **设计原则**：每次 LLM 响应最多生成 **3 张**思考解说卡片，避免信息过载。
-
----
-
-## 前端集成：SSE 流式输出格式
-
-服务端（`server.py`）通过 SSE（Server-Sent Events）将三种类型的内容流式推送给前端：
-
-### 正文回复事件
-
-```json
-{
-  "type": "text",
-  "text": "根据数据分析的结果..."
-}
-```
-
-前端处理：直接渲染到主聊天区域，逐字流式展示。
-
-### 思考过程事件
-
-```json
-{
-  "type": "thought",
-  "raw": "I need to first load the skill instructions...",
-  "narrated": "先从收集必要的信息开始"
-}
-```
-
-前端处理：可展示在折叠面板中（摘要显示 narrated 翻译，展开查看 raw 原文），或在侧边栏中展示。
-
-### 解说卡片事件（实时增量推送）
-
-每张卡片作为独立的 SSE 事件实时推送给前端：
-
-```json
-{
-  "type": "narrator_card",
-  "card": {
-    "phase": "before_tool",
-    "tool": "load_skill",
-    "icon": "📖",
-    "label": "加载技能指导",
-    "detail": "读取该技能的详细分步指导，了解正确的执行方法",
-    "args": "skill=data-analysis",
-    "status": "running"
-  },
-  "card_index": 0
-}
-```
-
-```json
-{
-  "type": "narrator_card",
-  "card": {
-    "phase": "after_tool",
-    "tool": "load_skill",
-    "icon": "📖",
-    "label": "加载技能指导 - 完成",
-    "detail": "返回 45 行 (2340 字符)，开头: # Data Analysis Instructions",
-    "status": "done"
-  },
-  "card_index": 1
-}
-```
-
-### 流结束事件
-
-```json
-{
-  "type": "done",
-  "card_count": 7,
-  "thought_count": 3
-}
-```
-
-前端处理：卡片渲染为步骤时间线（带颜色编码的左边框），done 事件标记流结束。
-
-### 前端展示建议
-
-```
-┌────────────────────────────────────────────────────────────┐
-│  💬 主聊天区域（正文回复，实时流式）                          │
-│                                                            │
-│  根据对销售数据的完整分析，以下是关键发现：                     │
-│  1. 华东地区营收同比增长 23%，是增长最快的区域...              │
-│  2. 产品 B 的客户满意度最高（4.7/5.0）...                    │
-│                                                            │
-├──────────────────────┬─────────────────────────────────────┤
-│  📊 过程解说（侧边栏）│                                     │
-│                      │                                     │
-│  📖 加载技能指导 ✓    │  ← 工具调用解说                      │
-│    读取了数据分析的    │                                     │
-│    分步指导           │                                     │
-│                      │                                     │
-│  🧠 思考过程          │  ← 思考解说                         │
-│    先从收集必要的      │                                     │
-│    信息开始           │                                     │
-│                      │                                     │
-│  📚 加载参考资料 ✓    │  ← 工具调用解说                      │
-│    查阅了统计分析      │                                     │
-│    方法参考文档       │                                     │
-│                      │                                     │
-│  🧠 思考过程          │  ← 思考解说                         │
-│    按照结构化方法论，  │                                     │
-│    逐步推进分析       │                                     │
-└──────────────────────┴─────────────────────────────────────┘
-```
-
----
-
-## 架构设计
-
-### 三个回调钩子
-
-旁路解说通过 ADK 的三个回调实现，挂载在 Agent 上：
-
-| 回调 | 触发时机 | 生成的卡片类型 | 作用 |
-|------|---------|--------------|------|
-| `before_tool_callback` | 工具执行前 | `status: "running"` | 告诉用户"即将做什么" |
-| `after_tool_callback` | 工具执行后 | `status: "done"` | 告诉用户"刚才做了什么，结果如何" |
-| `after_model_callback` | LLM 每次响应后 | `status: "info"` | 将思考过程翻译为通俗说明 |
-
-### 关键设计原则
-
-1. **解说粒度**：在工具调用边界触发（不是每个 token 都触发），避免信息洪水
-2. **解说范围**：只翻译过程，绝不触碰最终输出 — 正文回复保持原样
-3. **独立通道**：卡片存储在 session state 的 `_narrator_cards` 键下，与正文完全隔离
-4. **永不阻塞**：解说失败被静默捕获并记录日志，绝不影响主 Agent 运行
-
-### 项目结构
-
-```
-skill-process-explain-agents/
-├── pyproject.toml              # 项目依赖与配置
-├── client.py                   # CLI 客户端（命令行运行 Agent）
-├── server.py                   # FastAPI 服务端（SSE 流式接口）
-├── app/
-│   ├── __init__.py
-│   ├── agent.py                # 主 Agent：技能加载 + 回调绑定
-│   ├── narrator.py             # 旁路解说模块：工具标签、思考翻译、回调函数
-│   └── skills/
-│       ├── data-analysis/      # 数据分析技能（5 步方法论）
-│       │   ├── SKILL.md
-│       │   └── references/
-│       │       └── analysis-methods.md
-│       └── research-synthesis/ # 研究综合技能（5 阶段方法论）
-│           ├── SKILL.md
-│           └── references/
-│               └── synthesis-guide.md
-└── frontend/                   # React 前端（实时展示解说内容）
-    ├── package.json
-    ├── vite.config.js
-    └── src/
-        ├── main.jsx
-        ├── App.jsx             # 主界面：三通道渲染
-        ├── App.css
-        └── api.js              # SSE 流式客户端
+agno_medical_science/
+├── .env                          # 环境变量（API Key、端口等）
+├── Dockerfile                    # 生产镜像（Python 3.12 + Node 20 + Gunicorn）
+├── docker-compose.yml            # 容器编排（2 CPU、2G RAM）
+├── start.sh                      # 本地开发一键启动（后端 + 前端）
+├── start_manage.sh               # 管理服务一键启动（管理后端 + 管理前端）
+├── deploy.sh                     # 生产部署（git pull → docker build → 健康检查）
+│
+├── backend/
+│   ├── pyproject.toml            # Python 依赖（hatchling 构建）
+│   ├── server.py                 # FastAPI 服务端（SSE 流式、文件上传、缓存）
+│   ├── client.py                 # CLI 客户端（模拟前端，消费 SSE）
+│   ├── app/
+│   │   ├── agent.py              # Agent 定义（DeepSeek + 技能 + 回调）
+│   │   ├── narrator.py           # 旁路解说模块（工具标签、思考翻译）
+│   │   ├── file_reader.py        # PDF/PPTX/PPT/TXT 文件提取（带位置标记）
+│   │   └── skills/
+│   │       ├── medical-keyword-search/   # InfoX-Med 医学文献检索
+│   │       └── searxng/                  # SearXNG 网页搜索
+│   ├── cache/                    # SSE 响应缓存（JSON 文件）
+│   ├── logs/                     # 会话日志（JSONL）
+│   └── uploads/                  # 用户上传文件
+│
+├── frontend/
+│   ├── package.json              # Node 依赖
+│   ├── vite.config.ts
+│   └── src/
+│       ├── App.tsx               # 主界面（时间线、工具卡片、思考卡片、Markdown）
+│       ├── api.ts                # SSE 客户端、文件上传/列表/清理 API
+│       └── index.css             # Tailwind + 自定义样式
+│
+├── manage_backend/               # 管理后端（FastAPI，端口 8686）
+│   ├── server.py                 # 管理服务端（Agent 配置、技能管理、日志分析、智能优化）
+│   ├── app/
+│   │   └── config.py             # 路径配置（指向主 backend 的文件系统）
+│   └── data/                     # 版本历史快照（agent_versions/、skill_versions/）
+│
+├── manage_frontend/              # 管理前端（React + Vite，端口 3686）
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── src/
+│       ├── App.tsx               # 路由 + 侧边栏布局
+│       └── pages/
+│           ├── AgentPage.tsx     # Agent 配置编辑 + 版本回滚
+│           ├── SkillsPage.tsx    # 技能列表 + 新建/删除
+│           ├── SkillDetailPage.tsx # 技能详情（SKILL.md 编辑 + 脚本管理）
+│           ├── LogsPage.tsx      # 日志浏览 + 聚合分析
+│           └── OptimizePage.tsx  # LLM 驱动的智能优化建议
+│
+├── test/                         # 集成测试（pytest + httpx）
+│   ├── test_specific_question.py # 医学问答 + 缓存测试
+│   └── test_ppt_qa.py            # PPT 上传 + 幻灯片引用问答测试
+│
+└── docs/                         # 设计文档
 ```
 
 ---
 
 ## 快速开始
 
-### 环境准备
+### 本地开发
 
 ```bash
-# 安装依赖（推荐使用 uv）
+# 1. 后端依赖
+cd backend
 uv sync
 
-# 配置 API Key（使用 DeepSeek 模型）
-# 复制 .env.example 并填入你的 API Key
-cp .env.example .env
-# 编辑 .env，填入: DEEPSEEK_API_KEY=your-key-here
+# 2. 前端依赖
+cd ../frontend
+npm install
+
+# 3. 配置环境变量
+cp backend/env_example backend/.env
+# 编辑 backend/.env，填入 DEEPSEEK_API_KEY
+
+# 4. 一键启动（后端 :8585 + 前端 :3585）
+./start.sh
+
+# 或分别启动：
+cd backend && uv run python server.py --port 8585    # 后端
+cd frontend && npm run dev                            # 前端（自动代理到后端）
+
+# 5. 管理服务（可选）
+./start_manage.sh                                     # 管理后端 :8686 + 管理前端 :3686
 ```
 
-### 命令行运行
+### CLI 客户端（无需前端）
 
 ```bash
-# 交互模式（选择预设查询）
-python client.py
-
-# 运行特定技能的演示
-python client.py --skill data-analysis
-python client.py --skill research-synthesis
-
-# 自定义查询
-python client.py "分析客户流失数据"
-
-# 显示 Agent 原始思考内容（调试用）
-python client.py --verbose "研究 AI 伦理趋势"
-
-# 指定服务端地址
-python client.py --url http://localhost:9000 "分析销售数据"
+cd backend
+python client.py                              # 交互模式
+python client.py "分析销售数据"                 # 自定义查询
+python client.py --verbose "研究 AI 趋势"     # 显示原始思考（调试用）
 ```
 
-### 服务端运行
+### Docker 部署
 
 ```bash
-# 启动服务（默认端口 8000）
-python server.py
+# 配置 .env（DEEPSEEK_API_KEY 必填）
+./deploy.sh    # 完整流程：环境检查 → git pull → docker compose up → 健康检查
 
-# 自定义端口
-python server.py --port 8080
+# 或手动：
+docker compose up --build -d    # 容器端口 8046
 ```
 
-**API 接口：**
+### 运行测试
 
-| 接口 | 方法 | 说明 |
+```bash
+cd test
+pytest test_ppt_qa.py -v                    # PPT 上传 + 问答测试
+pytest test_specific_question.py -v         # 医学问答 + 缓存测试
+TEST_SERVER_URL=http://host:port pytest . -v  # 对远程服务器测试
+```
+
+---
+
+## API 接口
+
+| 方法 | 路径 | 说明 |
 |------|------|------|
-| `/chat` | POST | 一次性对话，返回完整回复 + 解说卡片 |
-| `/chat/stream` | GET | SSE 流式对话，实时推送回复和解说卡片 |
-| `/docs` | GET | Swagger UI（在线调试） |
+| `GET` | `/chat/stream?message=...&user_id=...` | **SSE 流式对话** — 实时推送事件流 |
+| `POST` | `/chat` | **非流式对话** — 返回完整 JSON |
+| `POST` | `/upload` | **上传文件**（multipart: `file` + `user_id`） |
+| `GET` | `/uploads?user_id=...` | **列出用户上传的文件** |
+| `DELETE` | `/uploads?user_id=...` | **清理用户所有上传文件** |
+| `GET` | `/cache/info` | **缓存统计信息** |
+| `DELETE` | `/cache` | **清空 SSE 缓存** |
+| `GET` | `/health` | **健康检查** |
+| `GET` | `/docs` | **Swagger UI** |
 
-**测试请求：**
+---
+
+## SSE 事件协议（v2）
+
+| 事件类型 | 关键字段 | 用途 |
+|---------|---------|------|
+| `text` | `text` | 正文内容，前端逐字追加 |
+| `thought` | `raw`, `narrated` | 思考卡片（可折叠，摘要显示 narrated） |
+| `tool_step` | `step_id`, `summary`, `calls[]` | 新工具步骤卡片 |
+| `tool_call` | `step_id`, `call_id`, `status`, `result_summary` | 更新子调用状态 |
+| `narrator_card` | `card`, `card_index` | 旁路解说卡片 |
+| `done` | `text_len`, `thought_count`, `step_count`, `card_count` | 流结束统计 |
+
+**事件示例：**
+
+```json
+{"type": "text", "text": "根据文献检索的结果..."}
+
+{"type": "thought", "raw": "I need to search for clinical trials...", "narrated": "正在检索相关临床试验数据"}
+
+{"type": "tool_step", "step_id": "s1", "summary": "🔬 检索医学文献", "calls": [{"call_id": "c1", "tool": "medical_keyword_search", "status": "running"}]}
+
+{"type": "narrator_card", "card": {"phase": "before_tool", "tool": "medical_keyword_search", "icon": "🔬", "label": "检索医学文献", "detail": "在 InfoX-Med 数据库中检索相关文献", "status": "running"}, "card_index": 0}
+
+{"type": "done", "text_len": 2340, "thought_count": 3, "step_count": 2, "card_count": 7}
+```
+
+---
+
+## 前端
+
+**技术栈：** React 19 + TypeScript + Vite 6 + Tailwind CSS 4
+
+| 特性 | 说明 |
+|------|------|
+| **暗色主题** | `#0b0f19` 深色背景 |
+| **实时流式** | SSE 打字机效果，逐字展示正文 |
+| **工具步骤卡片** | 可折叠，展示子调用详情与状态 |
+| **思考过程卡片** | 可折叠，摘要显示翻译后中文，展开查看原始思考 |
+| **文件上传** | 拖拽 + 点击上传，支持 PDF/PPTX/PPT/TXT |
+| **Markdown 渲染** | 表格、代码块、链接完整支持（react-markdown + remark-gfm） |
+| **可中断** | 停止按钮，随时中止流式请求 |
+| **动画** | Framer Motion (motion) 过渡动画 |
 
 ```bash
-curl -X POST http://localhost:8000/chat \
-  -H 'Content-Type: application/json' \
-  -d '{"message":"逐步分析销售数据"}'
+cd frontend
+npm install
+npm run dev        # 开发模式（HMR，自动代理到后端）
+npm run build      # 生产构建 → dist/
 ```
 
 ---
 
-## 解说卡片示例
+## 管理端
 
-一次完整的数据分析任务，用户看到的解说卡片如下：
+独立的管理面板，提供 Agent 配置编辑、技能管理、日志分析和 LLM 驱动的智能优化建议。管理后端直接读写主 backend 的文件系统，修改后重启主服务即可生效。
 
-```
-====================================================================
-  过程解说 — Agent 做了什么，为什么这么做
-====================================================================
+**技术栈：** React 19 + TypeScript + Tailwind CSS 4（前端）/ FastAPI + litellm（后端）
 
-  [1] 📖 加载技能指导 …
-      读取该技能的详细分步指导，了解正确的执行方法
-      → 参数: skill=data-analysis
+### 功能模块
 
-  [2] 📖 加载技能指导 - 完成 ✓
-      返回 45 行 (2340 字符)，开头: # Data Analysis Instructions
+| 模块 | 路径 | 说明 |
+|------|------|------|
+| **Agent 配置** | `/agent` | 在线编辑 Agent 的 `instruction` 和 `description`，支持版本历史和一键回滚 |
+| **技能管理** | `/skills` | 查看、创建、删除技能；编辑 SKILL.md 指导文档和 Python 脚本，每次修改自动保存版本快照 |
+| **日志分析** | `/logs` | 浏览 JSONL 会话日志，查看事件分布、工具调用记录和错误信息；全局聚合分析工具使用率和成功率 |
+| **智能优化** | `/optimize` | 将日志分析结果和当前配置发送给 DeepSeek，生成指令优化建议、技能改进方案和新技能创意 |
 
-  [3] 🧠 思考过程
-      先从收集必要的信息开始
+### 架构特点
 
-  [4] 📚 加载参考资料 …
-      查阅深度参考文档，确保分析质量和准确性
-      → 参数: skill=data-analysis, resource=analysis-methods
+- **文件系统直连**：管理后端通过读写 `backend/app/agent.py`、`backend/app/skills/`、`backend/logs/` 操作主服务，无需 HTTP 中转
+- **版本安全网**：每次编辑操作自动保存 JSON 快照到 `manage_backend/data/`，支持回滚到任意历史版本
+- **无认证**：设计为内部开发/管理工具，CORS 全开放
 
-  [5] 📚 加载参考资料 - 完成 ✓
-      返回 120 行 (5680 字符)，开头: # Analysis Methods Reference
+### 管理 API
 
-  [6] 🧠 思考过程
-      按照结构化方法论，逐步推进分析
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/agent` | 读取当前 Agent 配置（名称、描述、指令、模型） |
+| `PUT` | `/api/agent/instruction` | 更新 Agent 指令（自动保存版本） |
+| `PUT` | `/api/agent/description` | 更新 Agent 描述（自动保存版本） |
+| `GET` | `/api/agent/versions` | 列出 Agent 配置历史版本 |
+| `POST` | `/api/agent/rollback` | 回滚到指定版本 |
+| `GET` | `/api/skills` | 列出所有技能 |
+| `GET` | `/api/skills/{slug}` | 获取技能详情（SKILL.md + 脚本内容） |
+| `POST` | `/api/skills` | 创建新技能 |
+| `DELETE` | `/api/skills/{slug}` | 删除技能（自动备份） |
+| `PUT` | `/api/skills/{slug}/md` | 更新 SKILL.md |
+| `PUT` | `/api/skills/{slug}/scripts/{name}` | 更新脚本文件 |
+| `POST` | `/api/skills/{slug}/scripts` | 创建新脚本 |
+| `GET` | `/api/logs` | 列出日志文件 |
+| `GET` | `/api/logs/{filename}` | 查看单个日志详情 |
+| `GET` | `/api/logs/analyze` | 全局日志聚合分析 |
+| `POST` | `/api/optimize/suggestions` | LLM 驱动的智能优化建议 |
+| `GET` | `/api/status` | 系统状态 |
+| `GET` | `/health` | 健康检查 |
 
-  [7] 🧠 思考过程
-      将多方面的信息整合成清晰的结论
+### 启动管理端
 
-====================================================================
-  总计: 7 个步骤
-====================================================================
+```bash
+# 一键启动（管理后端 :8686 + 管理前端 :3686）
+./start_manage.sh
+
+# 或分别启动：
+cd manage_backend && uv run python server.py --port 8686     # 管理后端
+cd manage_frontend && npm install && npm run dev               # 管理前端（自动代理到管理后端）
 ```
 
 ---
 
-## 如何扩展新的工具解说
+## 环境变量
 
-当你给 Agent 添加了新工具，只需在 `narrator.py` 的 `TOOL_LABELS` 中添加映射。支持两种方式：
+### 必填
 
-### 精确匹配（推荐）
+| 变量 | 说明 |
+|------|------|
+| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 |
 
-直接添加工具名的完整映射：
+### 可选
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `DEEPSEEK_MODEL` | 模型标识 | `deepseek-v4-pro` |
+| `DEEPSEEK_BASE_URL` | API 基础地址 | `https://api.deepseek.com/v1` |
+| `PORT` | 后端端口 | `8585`（开发）/ `8046`（Docker） |
+| `HOST` | 绑定地址 | `0.0.0.0` |
+| `INFOX_MED_TOKEN` | InfoX-Med 文献检索 Token | （内置默认值） |
+| `SEARXNG_BASE_URL` | SearXNG 实例地址 | 内置默认值 |
+| `SEARXNG_MAX_ATTEMPTS` | SearXNG 重试次数 | `3` |
+| `SEARXNG_REQUEST_TIMEOUT` | SearXNG 请求超时（秒） | `30` |
+| `SSE_CACHE_MAX_SIZE` | 最大缓存条数 | `500` |
+| `SSE_CACHE_TTL` | 缓存 TTL（秒） | `86400`（24h） |
+| `WORKERS` | Gunicorn 进程数 | `4` |
+| `TIMEOUT` | Gunicorn 超时（秒） | `600` |
+
+---
+
+## 技术栈
+
+### 后端
+
+| 组件 | 技术 |
+|------|------|
+| 语言 | Python ≥ 3.10 |
+| Agent 框架 | Google ADK ≥ 1.0.0 |
+| 大模型 | DeepSeek（via LiteLLM） |
+| HTTP 框架 | FastAPI + Uvicorn |
+| 生产部署 | Gunicorn + UvicornWorker |
+| 文件处理 | python-pptx、pandoc、LibreOffice |
+| 包管理 | uv（hatchling 构建） |
+| 测试 | pytest + pytest-asyncio + httpx |
+
+### 前端
+
+| 组件 | 技术 |
+|------|------|
+| 框架 | React 19 + TypeScript |
+| 构建 | Vite 6 |
+| 样式 | Tailwind CSS 4 |
+| Markdown | react-markdown + remark-gfm |
+| 图标 | lucide-react |
+| 动画 | motion (Framer Motion) |
+
+---
+
+## 扩展工具解说
+
+在 `backend/app/narrator.py` 的 `TOOL_LABELS` 中添加映射即可：
 
 ```python
 TOOL_LABELS = {
-    # ... 已有映射 ...
-
-    # 新增：命令行工具
-    "run_command": {
-        "label": "执行数据处理",
-        "icon": "⚙️",
-        "detail": "运行数据处理脚本，对原始数据进行清洗和转换",
+    # 精确匹配
+    "new_tool_name": {
+        "label": "友好中文名",
+        "icon": "🔧",
+        "detail": "工具做什么的详细说明",
     },
-}
-```
-
-### 子串模式匹配
-
-对于命名有规律的工具，使用 `_` 前缀的键进行模糊匹配（如 `_search` 匹配任何包含 `search` 的工具名）：
-
-```python
-TOOL_LABELS = {
-    # ... 已有映射 ...
-
-    # 匹配所有包含 "search" 的工具名
+    # 子串模糊匹配（_ 前缀）
     "_search": {
         "label": "搜索信息",
         "icon": "🔍",
@@ -442,64 +472,4 @@ TOOL_LABELS = {
 }
 ```
 
-未匹配的工具名会自动转为标题大小写的可读文本（如 `run_command` → `Run Command`），并显示为 🔧 图标。
-
-不需要修改 Agent 或回调逻辑，旁路解说会自动识别新工具并展示友好标签。
-
----
-
-## 前端界面
-
-项目包含一个 React 前端，通过 SSE 实时展示 Agent 的三通道输出。
-
-### 技术栈
-
-| 组件 | 说明 |
-|------|------|
-| **React 18** | UI 框架 |
-| **Vite 5** | 构建工具（开发服务器端口 3000） |
-| **react-markdown** + **remark-gfm** | Markdown 渲染（支持 GFM 表格） |
-
-### 启动方式
-
-```bash
-cd frontend
-npm install
-npm run dev        # 开发模式，自动代理 /chat 到后端 localhost:8000
-npm run build      # 生产构建（输出到 dist/）
-```
-
-### 三通道渲染
-
-前端根据 SSE 事件的 `type` 字段将内容分发到不同展示区域：
-
-| type | 渲染方式 | 视觉效果 |
-|------|---------|---------|
-| `text` | Markdown 正文 | 主聊天区域，流式展示 |
-| `thought` | `<details>` 折叠面板 | 摘要显示翻译后的中文说明，展开查看原始思考 |
-| `narrator_card` | 彩色边框卡片 | 橙色边框=running，绿色边框=done，紫色边框=info |
-| `done` | 结束标记 | 停止流，汇总统计 |
-
-### 设计要点
-
-- **合并策略**：连续的同类 part（text/text、thought/thought）自动合并，减少 DOM 碎片
-- **实时反馈**：流式过程中显示闪烁光标和"思考中"动画
-- **可中断**：提供"停止"按钮，随时中止正在进行的请求
-
----
-
-## 技术栈（后端）
-
-| 组件 | 说明 |
-|------|------|
-| **Python >= 3.10** | 运行环境 |
-| **google-adk >= 1.0.0** | Agent 开发框架（回调、技能、Runner） |
-| **LiteLLM + DeepSeek** | 大模型接入（通过 LiteLLM 适配器） |
-| **FastAPI + Uvicorn** | HTTP 服务端（SSE 流式推送） |
-| **SkillToolset** | 技能管理（自动从 Markdown 目录加载技能） |
-
-## 参考来源
-
-- `agent-skills-tutorial` — 技能定义和 SkillToolset 模式
-- `nexshift-agent` — 基于回调的输出格式化（OutputFormatter、after_model_callback）
-- `解说者架构方案.html` — 旁路解说者架构设计文档
+未匹配的工具名自动转为标题大写可读文本（如 `run_command` → `Run Command`），显示 🔧 图标。

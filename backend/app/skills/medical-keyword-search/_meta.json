@@ -1,0 +1,15 @@
+{
+  "ownerId": "yifu-8lsb0kzhvvkhgtr6ctevsg1iowfq5atb",
+  "slug": "medical-keyword-search",
+  "version": "1.0.0",
+  "publishedAt": 1777429953223,
+  "changelog": [
+    {
+      "version": "1.0.0",
+      "date": "2026-04-29",
+      "changes": [
+        "初始版本发布"
+      ]
+    }
+  ]
+}

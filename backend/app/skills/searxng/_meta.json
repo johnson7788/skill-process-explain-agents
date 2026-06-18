@@ -1,0 +1,15 @@
+{
+  "ownerId": "yifu-cpy2xi9d5rpjjrtqkyworeucczzuyjv9",
+  "slug": "searxng",
+  "version": "1.0.0",
+  "publishedAt": 1777429953231,
+  "changelog": [
+    {
+      "version": "1.0.0",
+      "date": "2026-04-29",
+      "changes": [
+        "初始版本发布"
+      ]
+    }
+  ]
+}
