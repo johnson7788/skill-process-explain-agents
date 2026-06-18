@@ -170,7 +170,9 @@ def _build_context_message(message: str, skill_slugs: list[str], log_files: list
     将 agent 配置、选中 skill 内容、待分析日志文件名打包到用户消息中。
     日志内容由 agent 在对话中自行读取，此处只传递文件名。
     """
-    parts: list[str] = ["## 当前配置上下文（已自动加载）\n\n"]
+    parts: list[str] = [
+        "## 当前配置上下文（仅供参考的背景信息，并非优化指令）\n\n"
+    ]
 
     # Agent 配置
     try:
@@ -205,7 +207,12 @@ def _build_context_message(message: str, skill_slugs: list[str], log_files: list
             parts.append(f"- `{BACKEND_DIR}/logs/{fname}`\n")
         parts.append("\n")
 
-    parts.append(f"---\n\n## 用户的优化需求\n\n{message}")
+    parts.append(
+        "---\n\n## 用户的消息\n\n"
+        "（请先判断这条消息的意图：若只是打招呼/闲聊或意图不明确，"
+        "请友好回应或澄清提问，不要直接开始优化）\n\n"
+        f"{message}"
+    )
     return "".join(parts)
 
 

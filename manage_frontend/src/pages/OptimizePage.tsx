@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Loader2,
   Send,
+  Square,
   Wrench,
   FileText,
   Brain,
@@ -432,6 +433,12 @@ export default function OptimizePage() {
     stopStreamRef.current = stop;
   }
 
+  function handleStop() {
+    stopStreamRef.current?.();
+    stopStreamRef.current = null;
+    setStreaming(false);
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -627,17 +634,24 @@ export default function OptimizePage() {
               className="flex-1 resize-none rounded-xl border border-gray-200 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
               disabled={streaming}
             />
-            <button
-              onClick={handleSend}
-              disabled={!input.trim() || streaming}
-              className="flex items-center gap-1.5 px-4 py-2.5 bg-indigo-600 text-white text-sm rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {streaming ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
+            {streaming ? (
+              <button
+                onClick={handleStop}
+                title="停止回答"
+                className="flex items-center gap-1.5 px-4 py-2.5 bg-red-500 text-white text-sm rounded-xl hover:bg-red-600 transition-colors"
+              >
+                <Square className="w-4 h-4 fill-current" />
+                停止
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!input.trim()}
+                className="flex items-center gap-1.5 px-4 py-2.5 bg-indigo-600 text-white text-sm rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
                 <Send className="w-4 h-4" />
-              )}
-            </button>
+              </button>
+            )}
           </div>
         </div>
       </div>

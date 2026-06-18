@@ -95,6 +95,9 @@ type ExampleQuestion = {
 const EXAMPLE_QUESTIONS: ExampleQuestion[] = [
   { question: '对比 RAG 与长上下文窗口在知识密集型任务上的优劣' },
   { question: '追踪 Mixture-of-Experts 大模型的最新进展' },
+  { question: '联网搜索最近一周关于大模型的重要新闻并总结要点' },
+  { question: '搜索 2025 年主流向量数据库的对比评测，给出选型建议' },
+  { question: '查一下当前 OpenAI 和 Anthropic 最新发布的模型及其定价' },
 ];
 
 // ─── 子组件 ──────────────────────────────────────────────────────────────────
