@@ -6,7 +6,8 @@
   Agent 的 agent.py、skills、instruction，基于运行日志进行优化。
 
 文件操作通过 app/file_tools.py 提供的受控工具完成（读/写/编辑/搜索/列目录），
-写改前自动备份，不再依赖任意代码执行。
+写改前自动备份。terminal_tools.py 额外提供 run_command，可在指定工作目录执行
+任意 shell 命令（跑测试、查看 diff、验证启动等）。
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from agent.file_tools import (
     search_files,
     write_file,
 )
+from agent.terminal_tools import run_command
 
 load_dotenv()
 
@@ -67,6 +69,7 @@ root_agent = Agent(
         edit_file,
         list_dir,
         search_files,
+        run_command,
         skill_toolset,
     ],
 )
