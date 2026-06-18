@@ -21,6 +21,8 @@
 
 ## 效果演示
 
+![Agent 输出示例](docs/Agent输出示例.gif)
+
 > 以下为示例查询，展示智能体的完整工作流程。
 
 **查询**：对比 RAG 与长上下文窗口在知识密集型任务上的优劣
@@ -315,6 +317,8 @@ npm run build      # 生产构建 → dist/
 ## 管理端
 
 独立的管理面板，提供 Agent 配置编辑、技能管理、日志分析和 LLM 驱动的智能优化建议。管理后端直接读写主 backend 的文件系统，修改后重启主服务即可生效。
+
+![优化智能体界面](docs/优化智能体界面.png)
 
 **技术栈：** React 19 + TypeScript + Tailwind CSS 4（前端）/ FastAPI + litellm（后端）
 

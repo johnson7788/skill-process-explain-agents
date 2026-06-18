@@ -248,8 +248,12 @@ function ToolStepCard({ step }: { step: ToolStep }) {
   );
 }
 
-function ThoughtCard({ thought }: { thought: ThoughtItem }) {
-  const [open, setOpen] = useState(false);
+function ThoughtCard({ thought, thinking = false }: { thought: ThoughtItem; thinking?: boolean }) {
+  const [open, setOpen] = useState(thinking);
+  // 思考时自动展开，思考结束自动收缩
+  useEffect(() => {
+    setOpen(thinking);
+  }, [thinking]);
   return (
     <div className="inline-flex flex-col max-w-full">
       <div
@@ -261,8 +265,12 @@ function ThoughtCard({ thought }: { thought: ThoughtItem }) {
         ) : (
           <ChevronRight className="w-4 h-4" />
         )}
-        <Brain className="w-4 h-4" />
-        <span>思考过程</span>
+        {thinking ? (
+          <Loader2 className="w-4 h-4 animate-spin" />
+        ) : (
+          <Brain className="w-4 h-4" />
+        )}
+        <span>{thinking ? '思考中...' : '思考过程'}</span>
         {thought.narrated && (
           <span className="text-[12px] text-indigo-400/70 truncate max-w-xs">
             {thought.narrated}
@@ -428,7 +436,12 @@ function LiveAgentRow({
         {/* 时序渲染已刷入的内容 */}
         {timeline.map((item, i) => {
           if (item.kind === 'thought') {
-            return <ThoughtCard key={`t-${i}`} thought={item.data} />;
+            // 最后一项 thought 且仍在流式输出、尚无正式回答 → 正在思考
+            const isThinking =
+              isStreaming && i === timeline.length - 1 && !displayedText;
+            return (
+              <ThoughtCard key={`t-${i}`} thought={item.data} thinking={isThinking} />
+            );
           }
           if (item.kind === 'text') {
             return (
@@ -795,19 +808,22 @@ export default function App() {
       if (err instanceof DOMException && err.name === 'AbortError') {
         // 用户手动停止
         stopTyping();
+        const finalText = targetTextRef.current;
         flushText();
-        if (targetTextRef.current || collectedSteps.length > 0 || collectedThoughts.length > 0) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `assistant_${Date.now()}`,
-              role: 'assistant',
-              text: targetTextRef.current || undefined,
-              steps: collectedSteps.length > 0 ? [...collectedSteps] : undefined,
-              thoughts: collectedThoughts.length > 0 ? [...collectedThoughts] : undefined,
-              timeline: timelineRef.current.length > 0 ? [...timelineRef.current] : undefined,
-            },
-          ]);
+        // 在 setMessages 之前快照 timeline —— finally 会同步清空 timelineRef，
+        // 若在 updater 回调里惰性读取会读到已被清空的空数组，导致 timeline 丢失、
+        // 渲染退回到「先工具后思考」的兜底顺序。
+        const finalTimeline = [...timelineRef.current];
+        if (finalText || collectedSteps.length > 0 || collectedThoughts.length > 0) {
+          const assistantMsg: HistoryMessage = {
+            id: `assistant_${Date.now()}`,
+            role: 'assistant',
+            text: finalText || undefined,
+            steps: collectedSteps.length > 0 ? [...collectedSteps] : undefined,
+            thoughts: collectedThoughts.length > 0 ? [...collectedThoughts] : undefined,
+            timeline: finalTimeline.length > 0 ? finalTimeline : undefined,
+          };
+          setMessages((prev) => [...prev, assistantMsg]);
         }
       } else {
         console.error('SSE error:', err);
