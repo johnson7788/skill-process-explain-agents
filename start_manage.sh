@@ -42,6 +42,23 @@ cd "$PROJECT_DIR/manage_backend"
 uv run python server.py --port 8686 &
 MANAGE_BACKEND_PID=$!
 
+# 等待管理后端就绪
+echo -e "${YELLOW}等待管理后端就绪...${NC}"
+for i in $(seq 1 60); do
+    if ! kill -0 "$MANAGE_BACKEND_PID" 2>/dev/null; then
+        echo -e "${YELLOW}管理后端进程已退出，启动失败${NC}"
+        cleanup
+    fi
+    if curl -sf "http://localhost:8686/health" >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ 管理后端已就绪${NC}"
+        break
+    fi
+    if [ "$i" -eq 60 ]; then
+        echo -e "${YELLOW}等待管理后端超时，仍继续启动前端${NC}"
+    fi
+    sleep 1
+done
+
 # 启动管理前端
 echo -e "${YELLOW}启动管理前端 (端口 3686)...${NC}"
 cd "$PROJECT_DIR/manage_frontend"

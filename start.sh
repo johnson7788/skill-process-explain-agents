@@ -41,6 +41,23 @@ cd "$PROJECT_DIR/backend"
 uv run python server.py --port 8585 &
 BACKEND_PID=$!
 
+# 等待后端就绪
+echo -e "${YELLOW}等待后端就绪...${NC}"
+for i in $(seq 1 60); do
+    if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+        echo -e "${YELLOW}后端进程已退出，启动失败${NC}"
+        cleanup
+    fi
+    if curl -sf "http://localhost:8585/docs" >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ 后端已就绪${NC}"
+        break
+    fi
+    if [ "$i" -eq 60 ]; then
+        echo -e "${YELLOW}等待后端超时，仍继续启动前端${NC}"
+    fi
+    sleep 1
+done
+
 # 启动前端
 echo -e "${YELLOW}启动前端 (端口 3585)...${NC}"
 cd "$PROJECT_DIR/frontend"
