@@ -4,25 +4,14 @@ const API_BASE = '';
  * SSE 事件类型
  */
 export interface SSEEvent {
-  type: 'text' | 'thought' | 'tool_step' | 'tool_call' | 'narrator_card' | 'done';
+  type: 'text' | 'thought' | 'tool_step' | 'tool_call' | 'narrator_card' | 'clarify' | 'done';
   [key: string]: unknown;
 }
 
 /**
- * 调用 SSE 流式端点，yield 解析后的 JSON 事件
+ * 解析 fetch 响应体（SSE 流），yield 每条 data 的 JSON 事件
  */
-export async function* streamChat(
-  message: string,
-  userId: string = 'default_user',
-  signal?: AbortSignal,
-): AsyncGenerator<SSEEvent> {
-  const url = `${API_BASE}/chat/stream?message=${encodeURIComponent(message)}&user_id=${encodeURIComponent(userId)}`;
-
-  const response = await fetch(url, {
-    headers: { Accept: 'text/event-stream' },
-    signal,
-  });
-
+async function* parseSSE(response: Response): AsyncGenerator<SSEEvent> {
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`HTTP ${response.status}: ${text}`);
@@ -56,6 +45,41 @@ export async function* streamChat(
       }
     }
   }
+}
+
+/**
+ * 调用 SSE 流式端点，yield 解析后的 JSON 事件
+ */
+export async function* streamChat(
+  message: string,
+  userId: string = 'default_user',
+  signal?: AbortSignal,
+): AsyncGenerator<SSEEvent> {
+  const url = `${API_BASE}/chat/stream?message=${encodeURIComponent(message)}&user_id=${encodeURIComponent(userId)}`;
+  const response = await fetch(url, {
+    headers: { Accept: 'text/event-stream' },
+    signal,
+  });
+  yield* parseSSE(response);
+}
+
+/**
+ * 回答 clarify 澄清提问，续接同一 session 的流式输出
+ */
+export async function* answerChat(
+  sessionId: string,
+  callId: string,
+  answer: string,
+  userId: string = 'default_user',
+  signal?: AbortSignal,
+): AsyncGenerator<SSEEvent> {
+  const response = await fetch(`${API_BASE}/chat/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({ session_id: sessionId, call_id: callId, answer, user_id: userId }),
+    signal,
+  });
+  yield* parseSSE(response);
 }
 
 /**

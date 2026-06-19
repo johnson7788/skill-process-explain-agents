@@ -368,6 +368,7 @@ def _friendly_tool_name(raw: str) -> str:
         "terminal": "终端命令",
         "execute_code": "运行代码",
         "vision_analyze": "图片分析",
+        "clarify": "请求澄清",
     }
     return mapping.get(raw, raw)
 
@@ -572,6 +573,228 @@ async def chat(req: ChatRequest):
 
 
 # ---------------------------------------------------------------------------
+# 核心流式执行 — 被 /chat/stream 与 /chat/answer 复用
+# ---------------------------------------------------------------------------
+async def _run_agent_stream(session_id: str, user_id: str, new_message, emit, state: dict):
+    """运行一次 Agent 并以 SSE 帧产出过程事件。
+
+    参数:
+      emit(evt_dict) -> sse_frame: 调用方提供，负责收集/记录事件并格式化为 SSE 帧。
+      state: 可变 dict，用于回传标志位（如 state["clarify"]=True 表示触发了澄清提问，
+             调用方据此跳过缓存）。
+
+    clarify（人在回路）处理:
+      检测到 clarify 工具的 function_call 时，发出一个 "clarify" 事件
+      （含 session_id / call_id / question / choices）并结束本轮；用户回答后由
+      /chat/answer 以 function_response 回灌同一 session 续跑。
+    """
+    last_card_count = 0
+    last_card_check = 0.0
+    thought_count = 0
+    step_count = 0
+    text_len = 0
+
+    pending_calls: dict[str, str] = {}   # call_id → step_id
+    pending_code: dict[str, str] = {}    # code 块 id → step_id
+    emitted_code_ids: set[str] = set()
+
+    async for event in runner.run_async(
+        new_message=new_message,
+        user_id=user_id,
+        session_id=session_id,
+        run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+    ):
+        if not event.content or not event.content.parts:
+            continue
+        if getattr(event, "partial", True) is False:
+            continue
+
+        # ---- clarify 优先检测（人在回路）----
+        clarify_fc = None
+        for p in event.content.parts:
+            fc = getattr(p, "function_call", None)
+            if fc and fc.name == "clarify":
+                clarify_fc = fc
+                break
+        if clarify_fc is not None:
+            args = clarify_fc.args or {}
+            state["clarify"] = True
+            yield emit({
+                "type": "clarify",
+                "session_id": session_id,
+                "call_id": clarify_fc.id or "",
+                "question": args.get("question", ""),
+                "choices": list(args.get("choices") or []),
+            })
+            continue
+        # clarify 的 pending function_response 占位，不渲染成工具卡片
+        if any(
+            getattr(p, "function_response", None) and p.function_response.name == "clarify"
+            for p in event.content.parts
+        ):
+            continue
+
+        # ---- 工具调用事件 ----
+        has_fc = any(
+            hasattr(p, "function_call") and p.function_call
+            or hasattr(p, "function_response") and p.function_response
+            for p in event.content.parts
+        )
+        if has_fc:
+            step_id = f"step_{step_count}"
+            calls_out = []
+            summary_parts = []
+
+            for part in event.content.parts:
+                if hasattr(part, "thought") and part.thought:
+                    summary_parts.append((part.text or "").strip())
+                elif hasattr(part, "text") and part.text:
+                    summary_parts.append(part.text.strip())
+                elif hasattr(part, "function_call") and part.function_call:
+                    fc = part.function_call
+                    cid = fc.id or str(uuid.uuid4())[:8]
+                    call_entry = {
+                        "id": cid,
+                        "tool_name": fc.name,
+                        "display_name": _friendly_tool_name(fc.name),
+                        "args_summary": json.dumps(fc.args or {}, ensure_ascii=False),
+                        "status": "running",
+                        "result_summary": None,
+                    }
+                    calls_out.append(call_entry)
+                    pending_calls[cid] = step_id
+                elif hasattr(part, "function_response") and part.function_response:
+                    fr = part.function_response
+                    rid = fr.id or ""
+                    result_raw = fr.response or {}
+                    result_str = json.dumps(result_raw, ensure_ascii=False)
+                    status = "error" if _is_error_result(result_raw) else "done"
+                    call_entry = {
+                        "id": rid,
+                        "tool_name": fr.name,
+                        "display_name": _friendly_tool_name(fr.name),
+                        "args_summary": "",
+                        "status": status,
+                        "result_summary": result_str,
+                    }
+                    calls_out.append(call_entry)
+                    if rid in pending_calls:
+                        yield emit({
+                            "type": "tool_call",
+                            "step_id": pending_calls[rid],
+                            "call_id": rid,
+                            "status": status,
+                            "result_summary": result_str,
+                        })
+                        del pending_calls[rid]
+
+            if calls_out:
+                summary = " ".join(summary_parts) or _friendly_tool_name(calls_out[0]["tool_name"])
+                yield emit({
+                    "type": "tool_step",
+                    "step_id": step_id,
+                    "summary": summary,
+                    "call_count": len(calls_out),
+                    "calls": calls_out,
+                })
+                step_count += 1
+            continue
+
+        # ---- 代码执行事件（ADK 内置 code executor）----
+        has_code = any(
+            getattr(p, "executable_code", None) or getattr(p, "code_execution_result", None)
+            for p in event.content.parts
+        )
+        if has_code:
+            for part in event.content.parts:
+                ec = getattr(part, "executable_code", None)
+                if ec and getattr(ec, "code", None):
+                    cid = ec.id or f"code_{step_count}"
+                    if cid in emitted_code_ids:
+                        continue
+                    emitted_code_ids.add(cid)
+                    step_id = f"step_{step_count}"
+                    yield emit({
+                        "type": "tool_step",
+                        "step_id": step_id,
+                        "summary": "运行代码",
+                        "call_count": 1,
+                        "calls": [{
+                            "id": cid,
+                            "tool_name": "execute_code",
+                            "display_name": "运行代码",
+                            "args_summary": (ec.code or "")[:2000],
+                            "status": "running",
+                            "result_summary": None,
+                        }],
+                    })
+                    pending_code[cid] = step_id
+                    step_count += 1
+
+                cer = getattr(part, "code_execution_result", None)
+                if cer is not None:
+                    rid = cer.id or ""
+                    outcome = str(getattr(cer, "outcome", "") or "").upper()
+                    output = getattr(cer, "output", "") or ""
+                    status = "error" if ("FAIL" in outcome or "ERROR" in outcome) else "done"
+                    step_id = pending_code.pop(rid, None)
+                    if step_id is None and pending_code:
+                        rid, step_id = pending_code.popitem()
+                    if step_id:
+                        yield emit({
+                            "type": "tool_call",
+                            "step_id": step_id,
+                            "call_id": rid,
+                            "status": status,
+                            "result_summary": json.dumps({"output": output[:4000]}, ensure_ascii=False),
+                        })
+            continue
+
+        # ---- 思考 / 正文 ----
+        for part in event.content.parts:
+            if hasattr(part, "thought") and part.thought:
+                raw_text = part.text or ""
+                if raw_text.strip():
+                    thought_count += 1
+                    yield emit({
+                        "type": "thought",
+                        "raw": raw_text,
+                        "narrated": _explain_thinking(raw_text.strip()),
+                    })
+                continue
+            if hasattr(part, "text") and part.text:
+                text_len += len(part.text)
+                yield emit({"type": "text", "text": part.text})
+
+        # ---- 解说卡片增量推送 ----
+        now = time.time()
+        if now - last_card_check >= 0.2:
+            current_cards = await _get_current_cards(user_id, session_id)
+            last_card_check = now
+            while last_card_count < len(current_cards):
+                yield emit({
+                    "type": "narrator_card",
+                    "card": current_cards[last_card_count],
+                    "card_index": last_card_count,
+                })
+                last_card_count += 1
+
+    # ---- 最终卡片 & done ----
+    final_cards = await _get_current_cards(user_id, session_id)
+    while last_card_count < len(final_cards):
+        yield emit({"type": "narrator_card", "card": final_cards[last_card_count], "card_index": last_card_count})
+        last_card_count += 1
+
+    yield emit({
+        "type": "done",
+        "text_len": text_len,
+        "thought_count": thought_count,
+        "step_count": step_count,
+        "card_count": len(final_cards),
+    })
+
+
+# ---------------------------------------------------------------------------
 # GET /chat/stream — SSE 流式（协议 v2）
 # ---------------------------------------------------------------------------
 @app.get("/chat/stream")
@@ -621,205 +844,22 @@ async def chat_stream(message: str, user_id: str = "default_user"):
     collected_events: list[dict] = []  # 缓存未命中，收集事件以便结束后写入缓存
     slog = SessionLogger(session.id, user_id, message)
 
+    state: dict = {}
+
+    def emit(evt_data: dict):
+        """收集事件到缓存、写入日志并返回 SSE 帧。"""
+        collected_events.append(evt_data)
+        slog.log_event(evt_data)
+        return _sse(evt_data)
+
     async def event_generator():
         msg = types.Content(role="user", parts=[types.Part.from_text(text=full_message)])
 
-        last_card_count = 0
-        last_card_check = 0.0
-        thought_count = 0
-        step_count = 0
-        text_len = 0
+        async for frame in _run_agent_stream(session.id, user_id, msg, emit, state):
+            yield frame
 
-        # 追踪 function_call id → step_id 映射（用于 tool_call 更新事件）
-        call_id_to_step: dict[str, str] = {}
-        # 当前轮次待完成的 call ids
-        pending_calls: dict[str, str] = {}  # call_id → step_id
-        # 代码执行：待完成的 code 块 id → step_id；已发过 step 的 code id（去重）
-        pending_code: dict[str, str] = {}
-        emitted_code_ids: set[str] = set()
-
-        def emit(evt_data: dict):
-            """收集事件到缓存、写入日志并返回 SSE 帧。"""
-            collected_events.append(evt_data)
-            slog.log_event(evt_data)
-            return _sse(evt_data)
-
-        async for event in runner.run_async(
-            new_message=msg,
-            user_id=user_id,
-            session_id=session.id,
-            run_config=RunConfig(streaming_mode=StreamingMode.SSE),
-        ):
-            if not event.content or not event.content.parts:
-                continue
-            if getattr(event, "partial", True) is False:
-                continue
-
-            # ---- 工具调用事件 ----
-            has_fc = any(
-                hasattr(p, "function_call") and p.function_call
-                or hasattr(p, "function_response") and p.function_response
-                for p in event.content.parts
-            )
-            if has_fc:
-                step_id = f"step_{step_count}"
-                calls_out = []
-                summary_parts = []
-
-                for part in event.content.parts:
-                    if hasattr(part, "thought") and part.thought:
-                        summary_parts.append((part.text or "").strip())
-                    elif hasattr(part, "text") and part.text:
-                        summary_parts.append(part.text.strip())
-                    elif hasattr(part, "function_call") and part.function_call:
-                        fc = part.function_call
-                        cid = fc.id or str(uuid.uuid4())[:8]
-                        call_entry = {
-                            "id": cid,
-                            "tool_name": fc.name,
-                            "display_name": _friendly_tool_name(fc.name),
-                            "args_summary": json.dumps(fc.args or {}, ensure_ascii=False),
-                            "status": "running",
-                            "result_summary": None,
-                        }
-                        calls_out.append(call_entry)
-                        pending_calls[cid] = step_id
-                    elif hasattr(part, "function_response") and part.function_response:
-                        fr = part.function_response
-                        rid = fr.id or ""
-                        result_raw = fr.response or {}
-                        result_str = json.dumps(result_raw, ensure_ascii=False)
-                        status = "error" if _is_error_result(result_raw) else "done"
-                        call_entry = {
-                            "id": rid,
-                            "tool_name": fr.name,
-                            "display_name": _friendly_tool_name(fr.name),
-                            "args_summary": "",
-                            "status": status,
-                            "result_summary": result_str,
-                        }
-                        calls_out.append(call_entry)
-                        # 如果之前有对应的 pending call，发送更新事件
-                        if rid in pending_calls:
-                            yield emit({
-                                "type": "tool_call",
-                                "step_id": pending_calls[rid],
-                                "call_id": rid,
-                                "status": status,
-                                "result_summary": result_str,
-                            })
-                            del pending_calls[rid]
-
-                if calls_out:
-                    summary = " ".join(summary_parts) or _friendly_tool_name(calls_out[0]["tool_name"])
-                    yield emit({
-                        "type": "tool_step",
-                        "step_id": step_id,
-                        "summary": summary,
-                        "call_count": len(calls_out),
-                        "calls": calls_out,
-                    })
-                    step_count += 1
-                continue
-
-            # ---- 代码执行事件（ADK 内置 code executor）----
-            has_code = any(
-                getattr(p, "executable_code", None) or getattr(p, "code_execution_result", None)
-                for p in event.content.parts
-            )
-            if has_code:
-                for part in event.content.parts:
-                    ec = getattr(part, "executable_code", None)
-                    if ec and getattr(ec, "code", None):
-                        cid = ec.id or f"code_{step_count}"
-                        if cid in emitted_code_ids:
-                            continue
-                        emitted_code_ids.add(cid)
-                        step_id = f"step_{step_count}"
-                        yield emit({
-                            "type": "tool_step",
-                            "step_id": step_id,
-                            "summary": "运行代码",
-                            "call_count": 1,
-                            "calls": [{
-                                "id": cid,
-                                "tool_name": "execute_code",
-                                "display_name": "运行代码",
-                                "args_summary": (ec.code or "")[:2000],
-                                "status": "running",
-                                "result_summary": None,
-                            }],
-                        })
-                        pending_code[cid] = step_id
-                        step_count += 1
-
-                    cer = getattr(part, "code_execution_result", None)
-                    if cer is not None:
-                        rid = cer.id or ""
-                        outcome = str(getattr(cer, "outcome", "") or "").upper()
-                        output = getattr(cer, "output", "") or ""
-                        status = "error" if ("FAIL" in outcome or "ERROR" in outcome) else "done"
-                        step_id = pending_code.pop(rid, None)
-                        # code_execution_result 的 id 不一定与 executable_code 对应，
-                        # 退而关联最近一个待完成的代码块。
-                        if step_id is None and pending_code:
-                            rid, step_id = pending_code.popitem()
-                        if step_id:
-                            yield emit({
-                                "type": "tool_call",
-                                "step_id": step_id,
-                                "call_id": rid,
-                                "status": status,
-                                "result_summary": json.dumps({"output": output[:4000]}, ensure_ascii=False),
-                            })
-                continue
-
-            # ---- 思考 / 正文 ----
-            for part in event.content.parts:
-                if hasattr(part, "thought") and part.thought:
-                    raw_text = part.text or ""
-                    if raw_text.strip():
-                        thought_count += 1
-                        yield emit({
-                            "type": "thought",
-                            "raw": raw_text,
-                            "narrated": _explain_thinking(raw_text.strip()),
-                        })
-                    continue
-                if hasattr(part, "text") and part.text:
-                    text_len += len(part.text)
-                    yield emit({"type": "text", "text": part.text})
-
-            # ---- 解说卡片增量推送 ----
-            now = time.time()
-            if now - last_card_check >= 0.2:
-                current_cards = await _get_current_cards(user_id, session.id)
-                last_card_check = now
-                while last_card_count < len(current_cards):
-                    yield emit({
-                        "type": "narrator_card",
-                        "card": current_cards[last_card_count],
-                        "card_index": last_card_count,
-                    })
-                    last_card_count += 1
-
-        # ---- 最终卡片 & done ----
-        final_cards = await _get_current_cards(user_id, session.id)
-        while last_card_count < len(final_cards):
-            yield emit({"type": "narrator_card", "card": final_cards[last_card_count], "card_index": last_card_count})
-            last_card_count += 1
-
-        done_event = {
-            "type": "done",
-            "text_len": text_len,
-            "thought_count": thought_count,
-            "step_count": step_count,
-            "card_count": len(final_cards),
-        }
-        yield emit(done_event)
-
-        # 流结束：将收集到的事件写入缓存
-        if collected_events:
+        # 触发了 clarify（人在回路）时不写缓存——回放无法续接用户的真实回答。
+        if collected_events and not state.get("clarify"):
             _sse_cache.set(full_message, collected_events)
             logger.info("SSE cache SET (%d events): %.60s...", len(collected_events), message)
 
@@ -833,6 +873,62 @@ async def chat_stream(message: str, user_id: str = "default_user"):
                 yield frame
         except Exception as e:
             logger.error("Stream error: %s", e, exc_info=True)
+            slog.log_error(str(e))
+            slog.close()
+            raise
+
+    return StreamingResponse(
+        safe_event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+class AnswerRequest(BaseModel):
+    session_id: str
+    call_id: str
+    answer: str
+    user_id: str = "default_user"
+
+
+# ---------------------------------------------------------------------------
+# POST /chat/answer — 续接 clarify（人在回路）
+# ---------------------------------------------------------------------------
+@app.post("/chat/answer")
+async def chat_answer(req: AnswerRequest):
+    """用户回答 clarify 提问后续跑同一 session。
+
+    把回答封装为 clarify 工具的 function_response 回灌同一 session_id，
+    Agent 据此恢复执行，继续以 SSE 输出后续过程（协议同 /chat/stream）。
+    不写缓存：每次澄清回答都是一次性的人在回路交互。
+    """
+    msg = types.Content(
+        role="user",
+        parts=[types.Part(function_response=types.FunctionResponse(
+            id=req.call_id,
+            name="clarify",
+            response={"user_response": req.answer},
+        ))],
+    )
+
+    slog = SessionLogger(req.session_id, req.user_id, f"[clarify answer] {req.answer}")
+    state: dict = {}
+
+    def emit(evt_data: dict):
+        slog.log_event(evt_data)
+        return _sse(evt_data)
+
+    async def event_generator():
+        async for frame in _run_agent_stream(req.session_id, req.user_id, msg, emit, state):
+            yield frame
+        slog.close()
+
+    async def safe_event_generator():
+        try:
+            async for frame in event_generator():
+                yield frame
+        except Exception as e:
+            logger.error("Answer stream error: %s", e, exc_info=True)
             slog.log_error(str(e))
             slog.close()
             raise

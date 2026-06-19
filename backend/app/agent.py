@@ -36,7 +36,7 @@ from app.narrator import (
     after_tool_callback,
     before_tool_callback,
 )
-from app.tools import terminal, todo, vision_analyze
+from app.tools import clarify_tool, terminal, todo, vision_analyze
 
 load_dotenv()
 
@@ -99,6 +99,7 @@ root_agent = Agent(
         FunctionTool(todo),
         FunctionTool(terminal),
         FunctionTool(vision_analyze),
+        clarify_tool,
     ],
     before_tool_callback=before_tool_callback,
     after_tool_callback=after_tool_callback,

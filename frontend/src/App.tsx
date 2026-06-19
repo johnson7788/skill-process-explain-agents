@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   FileText,
+  HelpCircle,
   Loader2,
   Paperclip,
   Search,
@@ -20,7 +21,7 @@ import {
   Wrench,
   XCircle,
 } from 'lucide-react';
-import { streamChat, uploadFile, listUploads, clearUploads } from './api';
+import { streamChat, answerChat, uploadFile, listUploads, clearUploads, type SSEEvent } from './api';
 
 // ─── 类型定义 ────────────────────────────────────────────────────────────────
 
@@ -67,6 +68,15 @@ type TimelineItem =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; step: ToolStep };
 
+// ─── 澄清提问（人在回路）────────────────────────────────────────────────────
+
+interface ClarifyState {
+  session_id: string;
+  call_id: string;
+  question: string;
+  choices: string[];
+}
+
 // ─── 常量 ────────────────────────────────────────────────────────────────────
 
 const TYPING_CHARS = 3;
@@ -96,8 +106,24 @@ const EXAMPLE_QUESTIONS: ExampleQuestion[] = [
   { question: '对比 RAG 与长上下文窗口在知识密集型任务上的优劣' },
   { question: '追踪 Mixture-of-Experts 大模型的最新进展' },
   { question: '联网搜索最近一周关于大模型的重要新闻并总结要点' },
-  { question: '搜索 2025 年主流向量数据库的对比评测，给出选型建议' },
-  { question: '查一下当前 OpenAI 和 Anthropic 最新发布的模型及其定价' },
+  // 触发 clarify（人在回路）：未指明对比对象，会先反问澄清
+  { question: '帮我对比一下这两个方向的代表性工作，给出选型建议' },
+  // 触发 todo（任务规划）：复杂多步综述，会先列计划再逐步推进
+  { question: '系统调研 2024-2025 年扩散语言模型(Diffusion LLM)的发展脉络，分阶段梳理并形成综述' },
+  // 触发 code 执行：检索后用代码统计并可视化
+  { question: '检索 Mixture-of-Experts 近三年的代表论文，并用 Python 统计其按年份的数量分布' },
+  // 触发 terminal：在服务器上执行命令
+  { question: '看看服务器运行环境：当前 Python 版本和已安装的主要科学计算库' },
+  // 触发 vision/OCR：自动上传基准结果表图片，提取数据并补充相关论文
+  {
+    question: '识别这张基准测试结果表中的数据，并补充该评测的代表性论文',
+    demoFile: '/demo/benchmark_results.png',
+  },
+  // 触发文件解析：自动上传讲义 PPT
+  {
+    question: '解读这份讲义的核心内容，并补充该主题的最新 arXiv 论文',
+    demoFile: '/demo/LongContextLLM.pptx',
+  },
 ];
 
 // ─── 子组件 ──────────────────────────────────────────────────────────────────
@@ -478,6 +504,75 @@ function LiveAgentRow({
   );
 }
 
+function ClarifyCard({
+  clarify,
+  onAnswer,
+  disabled,
+}: {
+  clarify: ClarifyState;
+  onAnswer: (answer: string) => void;
+  disabled: boolean;
+}) {
+  const [custom, setCustom] = useState('');
+
+  return (
+    <div className="flex gap-4 w-full max-w-4xl mx-auto px-4 mb-6">
+      <div className="w-8 h-8 bg-[#1e293b] rounded-full flex items-center justify-center border border-slate-700/50 flex-shrink-0 mt-1">
+        <HelpCircle className="w-4 h-4 text-amber-400" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="bg-[#1c1a12] border border-amber-500/30 rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-3 text-[13px] font-medium text-amber-400">
+            <HelpCircle className="w-4 h-4" />
+            需要你确认
+          </div>
+          <div className="text-[15px] text-slate-200 mb-4 whitespace-pre-wrap">
+            {clarify.question}
+          </div>
+          {clarify.choices.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-3">
+              {clarify.choices.map((choice, i) => (
+                <button
+                  key={i}
+                  disabled={disabled}
+                  onClick={() => onAnswer(choice)}
+                  className="px-4 py-2 text-[14px] rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 hover:bg-amber-500/20 hover:border-amber-500/50 transition-colors disabled:opacity-40"
+                >
+                  {choice}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex items-end gap-2">
+            <textarea
+              rows={1}
+              value={custom}
+              disabled={disabled}
+              onChange={(e) => setCustom(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing) return;
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  if (custom.trim()) onAnswer(custom.trim());
+                }
+              }}
+              placeholder="或输入你的回答..."
+              className="flex-1 bg-[#0b0f19] border border-slate-700/60 focus:border-amber-500/50 rounded-lg text-[14px] text-slate-200 placeholder:text-slate-500 resize-none outline-none py-2.5 px-3 max-h-32 min-h-[42px]"
+            />
+            <button
+              disabled={disabled || !custom.trim()}
+              onClick={() => onAnswer(custom.trim())}
+              className="p-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors shrink-0 disabled:opacity-40"
+            >
+              <ArrowUp className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── 主组件 ──────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -495,6 +590,12 @@ export default function App() {
   const timelineRef = useRef<TimelineItem[]>([]);
   const typingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // 澄清提问（人在回路）：收集状态用 ref 以便回答后续接同一轮
+  const [clarify, setClarify] = useState<ClarifyState | null>(null);
+  const clarifyPendingRef = useRef(false);
+  const collectedStepsRef = useRef<ToolStep[]>([]);
+  const collectedThoughtsRef = useRef<ThoughtItem[]>([]);
 
   // 文件上传
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
@@ -516,7 +617,7 @@ export default function App() {
   // 自动滚底
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, displayedText, liveSteps, liveTimeline]);
+  }, [messages, displayedText, liveSteps, liveTimeline, clarify]);
 
   // 打字机效果
   const startTyping = useCallback(() => {
@@ -634,55 +735,51 @@ export default function App() {
 
   // ─── 发送消息 ──────────────────────────────────────────────────────────
 
-  const sendMessage = useCallback(async () => {
-    const text = input.trim();
-    if (!text || isStreaming) return;
-    setInput('');
-    setIsStreaming(true);
-
-    // 文件提示
-    let fileHint = '';
-    if (uploadedFiles.length > 0) {
-      fileHint = '\n\n[已上传文件: ' + uploadedFiles.map((f) => f.name).join(', ') + ']';
+  // 将累积的文字刷入 timeline
+  const flushText = useCallback(() => {
+    if (textBufferRef.current) {
+      timelineRef.current.push({ kind: 'text', text: textBufferRef.current });
+      setLiveTimeline([...timelineRef.current]);
+      textBufferRef.current = '';
     }
+    // 重置打字机状态 — 已刷入的文字由 timeline 渲染，避免重复显示
+    targetTextRef.current = '';
+    setDisplayedText('');
+  }, []);
 
-    // 追加用户消息
-    const userMsg: HistoryMessage = {
-      id: `user_${Date.now()}`,
-      role: 'user',
-      text: text + fileHint,
-    };
-    setMessages((prev) => [...prev, userMsg]);
-
-    // 重置流式状态
+  // 把当前实时 timeline 收尾为一条 assistant 历史消息，并重置实时状态
+  const finalizeAssistant = useCallback(() => {
+    const finalText = targetTextRef.current;
+    flushText();
+    const finalTimeline = [...timelineRef.current];
+    const steps = collectedStepsRef.current;
+    const thoughts = collectedThoughtsRef.current;
+    if (finalText || steps.length > 0 || thoughts.length > 0) {
+      const assistantMsg: HistoryMessage = {
+        id: `assistant_${Date.now()}`,
+        role: 'assistant',
+        text: finalText || undefined,
+        steps: steps.length > 0 ? [...steps] : undefined,
+        thoughts: thoughts.length > 0 ? [...thoughts] : undefined,
+        timeline: finalTimeline.length > 0 ? finalTimeline : undefined,
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
+    }
     targetTextRef.current = '';
     textBufferRef.current = '';
     timelineRef.current = [];
+    collectedStepsRef.current = [];
+    collectedThoughtsRef.current = [];
     setDisplayedText('');
     setLiveSteps([]);
     setLiveThoughts([]);
     setLiveTimeline([]);
+  }, [flushText]);
 
-    const collectedSteps: ToolStep[] = [];
-    const collectedThoughts: ThoughtItem[] = [];
-    const ac = new AbortController();
-    abortRef.current = ac;
-
-    // 将累积的文字刷入 timeline
-    const flushText = () => {
-      if (textBufferRef.current) {
-        const item: TimelineItem = { kind: 'text', text: textBufferRef.current };
-        timelineRef.current.push(item);
-        setLiveTimeline([...timelineRef.current]);
-        textBufferRef.current = '';
-      }
-      // 重置打字机状态 — 已刷入的文字由 timeline 渲染，避免重复显示
-      targetTextRef.current = '';
-      setDisplayedText('');
-    };
-
-    try {
-      for await (const evt of streamChat(text, 'default_user', ac.signal)) {
+  // 消费一个 SSE 事件流（首轮 streamChat 与 clarify 续接 answerChat 共用）
+  const processStream = useCallback(
+    async (gen: AsyncGenerator<SSEEvent>) => {
+      for await (const evt of gen) {
         switch (evt.type) {
           case 'text': {
             const chunk = evt.text as string;
@@ -693,40 +790,29 @@ export default function App() {
           }
 
           case 'thought': {
-            // 先刷出累积的文字到 timeline
             flushText();
             const rawChunk = evt.raw as string;
             const narrated = (evt.narrated as string) || null;
-
-            // 检查 timeline 最后一项是否是 thought —— 只有连续的 thought 才合并
             const lastTlItem = timelineRef.current[timelineRef.current.length - 1];
             const shouldMerge = lastTlItem?.kind === 'thought';
-
             if (shouldMerge) {
-              // 合并到最后一个 thought（连续的思考 chunk 归入同一张卡片）
-              const last = collectedThoughts[collectedThoughts.length - 1];
-              // 直接拼接 — 模型 token 自带正确的空格（如 " user"、" wants"）
+              const last = collectedThoughtsRef.current[collectedThoughtsRef.current.length - 1];
               last.raw += rawChunk;
               if (narrated) last.narrated = narrated;
-              setLiveThoughts([...collectedThoughts]);
-              // 更新 timeline 末尾的 thought 项
-              timelineRef.current[timelineRef.current.length - 1] =
-                { kind: 'thought', data: { ...last } };
+              setLiveThoughts([...collectedThoughtsRef.current]);
+              timelineRef.current[timelineRef.current.length - 1] = { kind: 'thought', data: { ...last } };
               setLiveTimeline([...timelineRef.current]);
             } else {
-              // 新建 thought（之前是 text / tool / 空 → 开始一段新的思考）
               const t: ThoughtItem = { raw: rawChunk, narrated };
-              collectedThoughts.push(t);
-              setLiveThoughts([...collectedThoughts]);
-              const item: TimelineItem = { kind: 'thought', data: t };
-              timelineRef.current.push(item);
+              collectedThoughtsRef.current.push(t);
+              setLiveThoughts([...collectedThoughtsRef.current]);
+              timelineRef.current.push({ kind: 'thought', data: t });
               setLiveTimeline([...timelineRef.current]);
             }
             break;
           }
 
           case 'tool_step': {
-            // 先刷出文字到 timeline
             flushText();
             const step: ToolStep = {
               step_id: evt.step_id as string,
@@ -734,11 +820,9 @@ export default function App() {
               call_count: evt.call_count as number,
               calls: (evt.calls as ToolCall[]) || [],
             };
-            collectedSteps.push(step);
+            collectedStepsRef.current.push(step);
             setLiveSteps((prev) => [...prev, step]);
-            // 添加到 timeline
-            const toolItem: TimelineItem = { kind: 'tool', step };
-            timelineRef.current.push(toolItem);
+            timelineRef.current.push({ kind: 'tool', step });
             setLiveTimeline([...timelineRef.current]);
             break;
           }
@@ -760,92 +844,133 @@ export default function App() {
                     },
               );
             setLiveSteps((prev) => updateCall(prev));
-            const idx = collectedSteps.findIndex((s) => s.step_id === step_id);
-            if (idx >= 0) collectedSteps[idx] = updateCall([collectedSteps[idx]])[0];
-            // 同步更新 timeline 中的工具步骤
-            const tl = timelineRef.current.map((item) => {
-              if (item.kind === 'tool' && item.step.step_id === step_id) {
-                const updated = updateCall([item.step])[0];
-                return { ...item, step: updated } as TimelineItem;
-              }
-              return item;
-            });
+            const idx = collectedStepsRef.current.findIndex((s) => s.step_id === step_id);
+            if (idx >= 0) collectedStepsRef.current[idx] = updateCall([collectedStepsRef.current[idx]])[0];
+            const tl = timelineRef.current.map((item) =>
+              item.kind === 'tool' && item.step.step_id === step_id
+                ? ({ ...item, step: updateCall([item.step])[0] } as TimelineItem)
+                : item,
+            );
             timelineRef.current = tl;
             setLiveTimeline(tl);
             break;
           }
 
+          case 'clarify': {
+            flushText();
+            clarifyPendingRef.current = true;
+            setClarify({
+              session_id: evt.session_id as string,
+              call_id: evt.call_id as string,
+              question: (evt.question as string) || '',
+              choices: (evt.choices as string[]) || [],
+            });
+            break;
+          }
+
           case 'done': {
             stopTyping();
-            const finalText = targetTextRef.current;
-            // 将最后的文字刷入 timeline
             flushText();
-            const finalTimeline = [...timelineRef.current];
-
-            const assistantMsg: HistoryMessage = {
-              id: `assistant_${Date.now()}`,
-              role: 'assistant',
-              text: finalText || undefined,
-              steps: collectedSteps.length > 0 ? [...collectedSteps] : undefined,
-              thoughts: collectedThoughts.length > 0 ? [...collectedThoughts] : undefined,
-              timeline: finalTimeline.length > 0 ? finalTimeline : undefined,
-            };
-            setMessages((prev) => [...prev, assistantMsg]);
-
-            targetTextRef.current = '';
-            textBufferRef.current = '';
-            timelineRef.current = [];
-            setDisplayedText('');
-            setLiveSteps([]);
-            setLiveThoughts([]);
-            setLiveTimeline([]);
+            // 触发了澄清提问：保留实时 timeline，停止 spinner，等待用户回答后续接
+            if (clarifyPendingRef.current) {
+              setIsStreaming(false);
+              return;
+            }
+            finalizeAssistant();
             setIsStreaming(false);
             break;
           }
         }
       }
-    } catch (err: unknown) {
+    },
+    [startTyping, stopTyping, flushText, finalizeAssistant],
+  );
+
+  // 流式异常统一处理（中止 / 网络错误）
+  const handleStreamError = useCallback(
+    (err: unknown) => {
+      stopTyping();
+      clarifyPendingRef.current = false;
+      setClarify(null);
       if (err instanceof DOMException && err.name === 'AbortError') {
-        // 用户手动停止
-        stopTyping();
-        const finalText = targetTextRef.current;
-        flushText();
-        // 在 setMessages 之前快照 timeline —— finally 会同步清空 timelineRef，
-        // 若在 updater 回调里惰性读取会读到已被清空的空数组，导致 timeline 丢失、
-        // 渲染退回到「先工具后思考」的兜底顺序。
-        const finalTimeline = [...timelineRef.current];
-        if (finalText || collectedSteps.length > 0 || collectedThoughts.length > 0) {
-          const assistantMsg: HistoryMessage = {
-            id: `assistant_${Date.now()}`,
-            role: 'assistant',
-            text: finalText || undefined,
-            steps: collectedSteps.length > 0 ? [...collectedSteps] : undefined,
-            thoughts: collectedThoughts.length > 0 ? [...collectedThoughts] : undefined,
-            timeline: finalTimeline.length > 0 ? finalTimeline : undefined,
-          };
-          setMessages((prev) => [...prev, assistantMsg]);
-        }
-      } else {
-        console.error('SSE error:', err);
-        stopTyping();
-        const errMsg = err instanceof Error ? err.message : '未知错误';
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `error_${Date.now()}`,
-            role: 'assistant',
-            text: `请求失败: ${errMsg}`,
-          },
-        ]);
+        finalizeAssistant();
+        return;
       }
+      console.error('SSE error:', err);
+      const errMsg = err instanceof Error ? err.message : '未知错误';
+      finalizeAssistant();
+      setMessages((prev) => [
+        ...prev,
+        { id: `error_${Date.now()}`, role: 'assistant', text: `请求失败: ${errMsg}` },
+      ]);
+    },
+    [stopTyping, finalizeAssistant],
+  );
+
+  const sendMessage = useCallback(async () => {
+    const text = input.trim();
+    if (!text || isStreaming) return;
+    setInput('');
+    setIsStreaming(true);
+    setClarify(null);
+    clarifyPendingRef.current = false;
+
+    // 文件提示
+    let fileHint = '';
+    if (uploadedFiles.length > 0) {
+      fileHint = '\n\n[已上传文件: ' + uploadedFiles.map((f) => f.name).join(', ') + ']';
+    }
+    setMessages((prev) => [
+      ...prev,
+      { id: `user_${Date.now()}`, role: 'user', text: text + fileHint },
+    ]);
+
+    // 重置流式状态
+    targetTextRef.current = '';
+    textBufferRef.current = '';
+    timelineRef.current = [];
+    collectedStepsRef.current = [];
+    collectedThoughtsRef.current = [];
+    setDisplayedText('');
+    setLiveSteps([]);
+    setLiveThoughts([]);
+    setLiveTimeline([]);
+
+    const ac = new AbortController();
+    abortRef.current = ac;
+
+    try {
+      await processStream(streamChat(text, 'default_user', ac.signal));
+    } catch (err: unknown) {
+      handleStreamError(err);
     } finally {
       setIsStreaming(false);
       abortRef.current = null;
-      textBufferRef.current = '';
-      timelineRef.current = [];
-      setLiveTimeline([]);
     }
-  }, [input, isStreaming, uploadedFiles, startTyping, stopTyping]);
+  }, [input, isStreaming, uploadedFiles, processStream, handleStreamError]);
+
+  // 回答 clarify 澄清提问，续接同一 session
+  const submitAnswer = useCallback(
+    async (answer: string) => {
+      if (!clarify || isStreaming || !answer) return;
+      const c = clarify;
+      setClarify(null);
+      clarifyPendingRef.current = false;
+      setIsStreaming(true);
+
+      const ac = new AbortController();
+      abortRef.current = ac;
+      try {
+        await processStream(answerChat(c.session_id, c.call_id, answer, 'default_user', ac.signal));
+      } catch (err: unknown) {
+        handleStreamError(err);
+      } finally {
+        setIsStreaming(false);
+        abortRef.current = null;
+      }
+    },
+    [clarify, isStreaming, processStream, handleStreamError],
+  );
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
@@ -916,13 +1041,18 @@ export default function App() {
           ),
         )}
 
-        {/* 流式实时渲染 */}
-        {isStreaming && (
+        {/* 流式实时渲染（澄清等待期间也保持可见） */}
+        {(isStreaming || clarify) && (
           <LiveAgentRow
             timeline={liveTimeline}
             displayedText={displayedText}
             isStreaming={isStreaming}
           />
+        )}
+
+        {/* 澄清提问卡片 */}
+        {clarify && (
+          <ClarifyCard clarify={clarify} onAnswer={submitAnswer} disabled={isStreaming} />
         )}
 
         <div ref={messagesEndRef} />
@@ -1006,8 +1136,14 @@ export default function App() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={isStreaming}
-            placeholder={isStreaming ? 'AI 正在思考...' : '输入你的研究问题...'}
+            disabled={isStreaming || !!clarify}
+            placeholder={
+              clarify
+                ? '请先回答上方的确认问题...'
+                : isStreaming
+                  ? 'AI 正在思考...'
+                  : '输入你的研究问题...'
+            }
             className="flex-1 bg-transparent text-[15px] text-slate-200 placeholder:text-slate-500 resize-none outline-none py-3 px-3 max-h-32 min-h-[44px] disabled:opacity-50"
           />
           {isStreaming ? (
@@ -1022,7 +1158,7 @@ export default function App() {
             <button
               className="p-2.5 m-0.5 bg-[#2563eb] hover:bg-blue-600 text-white rounded-xl transition-colors shrink-0 disabled:opacity-40"
               onClick={sendMessage}
-              disabled={!input.trim()}
+              disabled={!input.trim() || !!clarify}
             >
               <ArrowUp className="w-5 h-5" />
             </button>

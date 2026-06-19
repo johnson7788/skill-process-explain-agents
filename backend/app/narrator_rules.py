@@ -81,6 +81,11 @@ TOOL_LABELS: dict[str, dict[str, str]] = {
         "icon": "🖼️",
         "detail": "识别图片内容或提取图中文字（OCR）",
     },
+    "clarify": {
+        "label": "请求澄清",
+        "icon": "❓",
+        "detail": "向你确认关键信息，以便给出更准确的结果",
+    },
     # 通用 fallback 模式
     "_search": {
         "label": "搜索信息",
