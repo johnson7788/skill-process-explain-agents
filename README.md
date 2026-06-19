@@ -1,6 +1,6 @@
 # 学术论文研究智能体
 
-基于 Google ADK + DeepSeek 构建的学术论文研究智能体，支持**arXiv 论文检索、网页搜索、文件上传问答**，并通过**旁路解说架构**将 Agent 的工具调用与思考过程翻译为通俗易懂的中文卡片，让非技术用户也能理解 AI 的分析过程。
+基于 Google ADK + DeepSeek 构建的学术论文研究智能体，支持**arXiv 论文检索、网页搜索、文件上传问答**，并内置**任务规划、终端执行、代码执行、图片分析（OCR）、人在回路澄清**等智能体能力。通过**旁路解说架构**将 Agent 的工具调用与思考过程翻译为通俗易懂的中文卡片，让非技术用户也能理解 AI 的分析过程。
 
 ---
 
@@ -11,6 +11,11 @@
 | **arXiv 论文检索** | 接入 arXiv 公开 API，支持按相关性/最新提交并行检索、按分类/作者检索、自由检索表达式 |
 | **网页搜索** | 自建 SearXNG 实例，支持通用/新闻/图片/视频搜索，自动重试与诊断 |
 | **文件上传问答** | 支持 PDF、PPTX、PPT、TXT 文件上传，自动提取内容并带位置标记（`[第X页]`、`[幻灯片X]`）注入 LLM 上下文 |
+| **任务规划（todo）** | 面对多步骤研究任务，Agent 先拆解出待办清单并逐步推进、实时更新进度 |
+| **终端执行（terminal）** | 在服务器上执行 shell 命令，查看环境、运行脚本、读取文件 |
+| **代码执行（code）** | 内置 Python 代码执行器，自动编写并运行代码做数据统计与计算，过程同样以解说卡片展示 |
+| **图片分析 / OCR（vision）** | 上传截图、图表、结果表、扫描件等图片，调用独立视觉模型理解内容或提取文字（DeepSeek 无视觉能力，单独配置 qwen-vl-max） |
+| **人在回路澄清（clarify）** | 需求模糊或缺关键信息时，Agent 主动反问澄清，用户回答后无缝续接同一会话继续执行 |
 | **旁路解说** | 工具调用和思考过程被翻译为友好的中文卡片，实时推送给前端 |
 | **SSE 流式输出** | 6 种事件类型实时推送，前端逐字打字机效果展示 |
 | **SSE 响应缓存** | 相同问题秒级回放缓存结果（持久化到 `cache/` 目录，TTL 24h、LRU 淘汰） |
@@ -128,6 +133,50 @@
 
 ---
 
+## 智能体能力（工具）
+
+除两个检索技能（arXiv 论文检索、网页搜索）外，Agent 还内置以下通用工具，定义在 `backend/app/tools.py`，并在 `backend/app/agent.py` 中注册：
+
+| 工具 | 类型 | 说明 |
+|------|------|------|
+| `todo` | 任务规划 | 拆解复杂任务为待办清单并跟踪进度，状态存于会话 state（单轮会话内有效） |
+| `terminal` | 终端执行 | `subprocess` 执行 shell 命令，返回 stdout/stderr/returncode（高权限，请在受信部署边界内使用） |
+| `execute_code` | 代码执行 | Google ADK 内置 `UnsafeLocalCodeExecutor`，自动编写并运行 Python 代码处理数据/计算 |
+| `vision_analyze` | 图片分析/OCR | 通过独立视觉模型（默认 qwen-vl-max）分析图片或提取文字，支持图片 URL 或已上传文件名 |
+| `clarify` | 人在回路 | `LongRunningFunctionTool`，向用户提问澄清后挂起，等待回答再续接同一会话 |
+
+### 人在回路（clarify）工作流
+
+```
+用户提问（模糊）
+    │
+    ▼  Agent 判断需求不明确，调用 clarify
+SSE 事件 clarify {session_id, call_id, question, choices[]}
+    │
+    ▼  前端渲染澄清卡片（问题 + 选项按钮 + 自由输入）
+用户回答
+    │
+    ▼  POST /chat/answer  以 function_response 回灌同一 session_id
+SSE 续接（text / thought / tool_step ... / done），无缝继续执行
+```
+
+> 实现要点：`/chat/stream` 与 `/chat/answer` 共用核心流式 helper `_run_agent_stream(...)`；
+> 由于澄清回答无法被缓存回放，clarify 触发的会话**跳过 SSE 缓存**。
+
+### 演示示例
+
+前端欢迎页内置了覆盖上述能力的示例问题，点击即可体验（带文件的示例会自动上传内置 demo 文件）：
+
+| 示例问题 | 演示能力 |
+|----------|---------|
+| 帮我对比一下**这两个方向**的代表性工作，给出选型建议 | clarify（未指明对象 → 反问澄清） |
+| 系统调研扩散语言模型的发展脉络，分阶段梳理并形成综述 | todo（多步任务规划） |
+| 检索 MoE 论文并用 Python 统计其按年份的数量分布 | execute_code（代码执行） |
+| 看看服务器运行环境：Python 版本和主要科学计算库 | terminal（终端执行） |
+| 识别这张基准测试结果表中的数据，并补充该评测的代表性论文 | vision/OCR（自动上传图片） |
+
+---
+
 ## 项目结构
 
 ```
@@ -144,12 +193,16 @@ arxiv-research-agent/
 │   ├── server.py                 # FastAPI 服务端（SSE 流式、文件上传、缓存）
 │   ├── client.py                 # CLI 客户端（模拟前端，消费 SSE）
 │   ├── app/
-│   │   ├── agent.py              # Agent 定义（DeepSeek + 技能 + 回调）
-│   │   ├── narrator.py           # 旁路解说模块（工具标签、思考翻译）
-│   │   ├── file_reader.py        # PDF/PPTX/PPT/TXT 文件提取（带位置标记）
+│   │   ├── agent.py              # Agent 定义（DeepSeek + 技能 + 工具 + 回调）
+│   │   ├── tools.py             # 自定义工具：todo / terminal / vision_analyze / clarify
+│   │   ├── create_model.py      # 模型工厂（10+ 供应商，统一走 LiteLLM）
+│   │   ├── narrator.py           # 旁路解说回调逻辑（三回调 + 格式化）
+│   │   ├── narrator_rules.py    # 解说规则：TOOL_LABELS 工具标签 + 思考翻译模式
+│   │   ├── file_reader.py        # PDF/PPTX/PPT/TXT/图片 文件提取（带位置标记）
+│   │   ├── instruction.md       # Agent 系统提示词（中文）
 │   │   └── skills/
 │   │       ├── arxiv-paper-search/       # arXiv 学术论文检索
-│   │       └── searxng/                  # SearXNG 网页搜索
+│   │       └── bingsearch/               # Bing 网页搜索
 │   ├── cache/                    # SSE 响应缓存（JSON 文件）
 │   ├── logs/                     # 会话日志（JSONL）
 │   └── uploads/                  # 用户上传文件
@@ -157,9 +210,10 @@ arxiv-research-agent/
 ├── frontend/
 │   ├── package.json              # Node 依赖
 │   ├── vite.config.ts
+│   ├── public/demo/             # 内置演示文件（PPT、基准结果表图片）
 │   └── src/
-│       ├── App.tsx               # 主界面（时间线、工具卡片、思考卡片、Markdown）
-│       ├── api.ts                # SSE 客户端、文件上传/列表/清理 API
+│       ├── App.tsx               # 主界面（时间线、工具卡片、思考卡片、澄清卡片、Markdown）
+│       ├── api.ts                # SSE 客户端（streamChat/answerChat）、文件上传/列表/清理 API
 │       └── index.css             # Tailwind + 自定义样式
 │
 ├── manage_backend/               # 管理后端（FastAPI，端口 8686）
@@ -252,6 +306,7 @@ TEST_SERVER_URL=http://host:port pytest . -v  # 对远程服务器测试
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/chat/stream?message=...&user_id=...` | **SSE 流式对话** — 实时推送事件流 |
+| `POST` | `/chat/answer` | **回答澄清提问** — 续接 clarify 人在回路（body: `session_id`/`call_id`/`answer`/`user_id`），以 SSE 续接同一会话 |
 | `POST` | `/chat` | **非流式对话** — 返回完整 JSON |
 | `POST` | `/upload` | **上传文件**（multipart: `file` + `user_id`） |
 | `GET` | `/uploads?user_id=...` | **列出用户上传的文件** |
@@ -272,6 +327,7 @@ TEST_SERVER_URL=http://host:port pytest . -v  # 对远程服务器测试
 | `tool_step` | `step_id`, `summary`, `calls[]` | 新工具步骤卡片 |
 | `tool_call` | `step_id`, `call_id`, `status`, `result_summary` | 更新子调用状态 |
 | `narrator_card` | `card`, `card_index` | 旁路解说卡片 |
+| `clarify` | `session_id`, `call_id`, `question`, `choices[]` | 人在回路澄清提问，前端渲染澄清卡片，回答经 `POST /chat/answer` 续接 |
 | `done` | `text_len`, `thought_count`, `step_count`, `card_count` | 流结束统计 |
 
 **事件示例：**
@@ -284,6 +340,8 @@ TEST_SERVER_URL=http://host:port pytest . -v  # 对远程服务器测试
 {"type": "tool_step", "step_id": "s1", "summary": "🔬 检索学术论文", "calls": [{"call_id": "c1", "tool": "arxiv_search", "status": "running"}]}
 
 {"type": "narrator_card", "card": {"phase": "before_tool", "tool": "arxiv_search", "icon": "🔬", "label": "检索学术论文", "detail": "通过 arXiv API 检索相关方向的论文", "status": "running"}, "card_index": 0}
+
+{"type": "clarify", "session_id": "s-abc", "call_id": "c-123", "question": "你想对比哪两个方向？", "choices": ["RAG vs 长上下文", "MoE vs Dense"]}
 
 {"type": "done", "text_len": 2340, "thought_count": 3, "step_count": 2, "card_count": 7}
 ```
@@ -300,7 +358,8 @@ TEST_SERVER_URL=http://host:port pytest . -v  # 对远程服务器测试
 | **实时流式** | SSE 打字机效果，逐字展示正文 |
 | **工具步骤卡片** | 可折叠，展示子调用详情与状态 |
 | **思考过程卡片** | 可折叠，摘要显示翻译后中文，展开查看原始思考 |
-| **文件上传** | 拖拽 + 点击上传，支持 PDF/PPTX/PPT/TXT |
+| **澄清卡片** | clarify 人在回路：渲染问题 + 选项按钮 + 自由输入，回答后续接同一会话 |
+| **文件上传** | 拖拽 + 点击上传，支持 PDF/PPTX/PPT/TXT 及图片（OCR） |
 | **Markdown 渲染** | 表格、代码块、链接完整支持（react-markdown + remark-gfm） |
 | **可中断** | 停止按钮，随时中止流式请求 |
 | **动画** | Framer Motion (motion) 过渡动画 |
@@ -392,6 +451,10 @@ cd manage_frontend && npm install && npm run dev               # 管理前端（
 | `SEARXNG_BASE_URL` | SearXNG 实例地址（需自部署） | `http://localhost:8080/search` |
 | `SEARXNG_MAX_ATTEMPTS` | SearXNG 重试次数 | `3` |
 | `SEARXNG_REQUEST_TIMEOUT` | SearXNG 请求超时（秒） | `30` |
+| `VISION_MODEL` | 视觉模型标识（用于 `vision_analyze` 图片分析/OCR） | `openai/qwen-vl-max` |
+| `VISION_API_KEY` | 视觉模型 API 密钥（DeepSeek 无视觉能力，需单独配置） | — |
+| `VISION_API_BASE` | 视觉模型 API 地址 | 阿里百炼 OpenAI 兼容端点 |
+| `SSE_CACHE_ENABLED` | 是否启用 SSE 缓存 | `true` |
 | `SSE_CACHE_MAX_SIZE` | 最大缓存条数 | `500` |
 | `SSE_CACHE_TTL` | 缓存 TTL（秒） | `86400`（24h） |
 | `WORKERS` | Gunicorn 进程数 | `4` |
@@ -429,7 +492,7 @@ cd manage_frontend && npm install && npm run dev               # 管理前端（
 
 ## 扩展工具解说
 
-在 `backend/app/narrator.py` 的 `TOOL_LABELS` 中添加映射即可：
+新增工具后，在 `backend/app/narrator_rules.py` 的 `TOOL_LABELS` 中添加映射，工具调用才会生成解说卡片：
 
 ```python
 TOOL_LABELS = {
